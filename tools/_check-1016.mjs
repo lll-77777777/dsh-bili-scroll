@@ -129,6 +129,20 @@ ok(!duty.includes('同一个人在同一话题下只回一次'), 'duty.md 里旧
 ok(duty.includes('评论区「来回对话」'), 'duty.md 没有「评论区来回对话」那一节')
 ok(read('vendor/bilibili-mcp/mcp_server.py').includes('rpid_str'), '内置 MCP 没把 rpid 一起回给调用方')
 
+// ⑫ 「只回我 @ 的那个人」（2026-10-16 使用者："只回复我就行了，不理其他人"）
+ok(threads.includes('ownerMid'), 'threads.mjs 没有"把本人 UID 认死"的逻辑')
+ok(threads.includes('不是本人（不理）'), 'threads.mjs 没有"不是本人就不理"的那一跳')
+ok(threads.includes('export const normName'), 'threads.mjs 没有昵称归一化（带 @ / 空白 / 大小写）')
+ok(threads.includes('就是插件登录的这个账号'), '没有"要 @ 谁 == 插件自己"那条自查')
+ok(api.includes('export async function ownAccount'), 'bili-api.mjs 没有"我们这个账号是谁"那条只读接口')
+ok(idx.includes("replyOnlyMention: z.boolean().default(true)"), 'replyOnlyMention 默认不是 true（他要不理其他人）')
+ok(idx.includes('const buildInboxForMe'), 'index.js 没有统一的收件箱入口（危险配置没兜住）')
+ok(idx.includes('谁都不回'), '开着白名单但没填昵称时，没有退化成"谁都不回"的兜底')
+ok(idx.includes('只回「${only.replace'), '提示词里没把"只回这一个人"写进去')
+ok(cli.includes('只回我 @ 的那个人'), 'client.js 没有「只回我 @ 的那个人」开关')
+ok(duty.includes('只回复我就行了，不理其他人'), 'duty.md 没写"只回使用者本人"这条规矩')
+ok(duty.includes('一律不理'), 'duty.md 没写"名单之外一律不理"')
+
 console.log(fail.length ? '❌ 有 ' + fail.length + ' 条没过（共 ' + total + ' 条）：' : `✅ 全部 ${total} 条断言通过`)
 for (const f of fail) console.log('   - ' + f)
 process.exit(fail.length ? 1 : 0)

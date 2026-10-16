@@ -89,6 +89,13 @@ export const Config = !z ? undefined : z.object({
    *    提示词里的纪律靠它兜底，别指望模型每次都自觉收住 ✗
    */
   replyDepth: z.natural().default(5).extra('volatile', true),
+  /**
+   * ⭐⭐ **只回「要 @ 谁」那个人**（默认开）。
+   *    2026-10-16 使用者一句话定的规矩：「只回复我就行了，不理其他人」。
+   *    ⇒ 名单里只会出现**他本人**的留言；别人回复到它那条评论下面，一律不理 ✓
+   *    （认人先按 UID、再按昵称认第一次，见 lib/threads.mjs）
+   */
+  replyOnlyMention: z.boolean().default(true).extra('volatile', true),
 })
 
 /**
@@ -161,7 +168,7 @@ export function apply(ctx, config) {
    */
   const DEFAULTS = {
     perDay: 5, peakValley: false, noon: true, night: true, autoComment: false, transcribe: false, asrModel: 'small',
-    keywords: [], commentPerRound: 1, mentionName: '', pythonPath: 'python', dshBin: '', headlessProfile: 'headless', overlayMcp: true, workspace: '', reportLevel: 'full', replyToComments: false, replyPerRound: 1, replyDepth: 5,
+    keywords: [], commentPerRound: 1, mentionName: '', pythonPath: 'python', dshBin: '', headlessProfile: 'headless', overlayMcp: true, workspace: '', reportLevel: 'full', replyToComments: false, replyPerRound: 1, replyDepth: 5, replyOnlyMention: true,
   }
   const normalize = (src, base) => {
     const out = { ...base }
@@ -411,13 +418,17 @@ export function apply(ctx, config) {
   tool({
     name: 'bili_inbox',
     description: '看评论区有没有人在等你回话：列出「回复了你那条评论、而你还没接话」的人，'
-      + '含要回的那条 rpid / root、已经来回几轮、还能回几轮。**回话前先看这个**。',
+      + '含要回的那条 rpid / root、已经来回几轮、还能回几轮。**回话前先看这个**。\n'
+      + '⭐ 默认只列**使用者本人**（设置里「只回我 @ 的那个人」开着）—— 别人回的不会出现在这里。',
     parameters: {},
     async execute() {
-      const r = await buildInbox(stateDir, { depth: Number(cfg.replyDepth) || 5, log })
+      const r = await buildInboxForMe()
       return {
         ok: r.ok,
         error: r.error || undefined,
+        // ⭐ 名单里只有谁（空 = 没开"只回我 @ 的那个人"）
+        onlyFor: r.onlyName || undefined,
+        owner: r.owner?.mid ? r.owner : undefined,
         waiting: r.items.length,
         scanned: r.scanned,
         skipped: r.why,
@@ -578,14 +589,49 @@ export function apply(ctx, config) {
   /** ⭐ 收件箱文件（那一轮可以直接读它；同时也内联进提示词，省它一次工具调用） */
   const inboxFile = join(stateDir, 'inbox.md')
 
+  /**
+   * ⭐ 「只回我 @ 的那个人」当前该填什么（空 = 回所有人）。
+   *    ⚠️ 昵称直接用 `mentionName` —— 跟"发评论 @ 谁"用的是同一个字段 ⇒ 使用者只需填一次，
+   *      也就不会出现"发评论 @ A、回话只认 B"这种自相矛盾的配置 ✓
+   */
+  const replyOnlyNameNow = () => (cfg.replyOnlyMention ? String(cfg.mentionName || '').trim() : '')
+
+  /**
+   * ⭐ 收件箱的唯一入口（跑一轮 / `bili_inbox` / `GET /inbox` 三处共用）。
+   *
+   * 顺手挡掉一种**危险配置**：「只回我 @ 的那个人」开着，但「要 @ 谁」是空的 ——
+   * 这时谁都认不出来。**绝不能退化成"回所有人"**（那正是使用者最不想要的 ✗）⇒
+   * 直接回一句"先去填昵称"，这一轮谁都不回 ✓
+   */
+  const buildInboxForMe = () => {
+    if (cfg.replyToComments && cfg.replyOnlyMention && !String(cfg.mentionName || '').trim()) {
+      return Promise.resolve({
+        ok: false, items: [], text: '', scanned: 0, why: {},
+        error: '「只回我 @ 的那个人」开着，但「要 @ 谁」（在下面「自动评论并 @ 你」里）是空的 —— '
+          + '那样它认不出你，所以这一轮**谁都不回**。先把你回话用的那个 B站 昵称填上。',
+      })
+    }
+    return buildInbox(stateDir, {
+      depth: Math.max(1, Number(cfg.replyDepth) || 5),
+      onlyName: replyOnlyNameNow(),
+      log,
+    })
+  }
+
+
   /** 「评论区来回对话」那一段开关说明 —— 跑一轮和「立刻回话」两处共用同一份口径 */
   const replyVoiceLine = () => {
     const per = Math.max(1, Number(cfg.replyPerRound) || 1)
     const depth = Math.max(1, Number(cfg.replyDepth) || 5)
+    const only = replyOnlyNameNow()
     if (!cfg.replyToComments) {
       return `评论区来回对话：关着（一个字都不要回任何人 —— 就算有人回复你那条评论也不要理）。`
     }
     return `评论区来回对话：开着 —— 每轮最多回 ${per} 条；**同一条串最多来回 ${depth} 轮**（到顶就收住，别再接话）。`
+      + (only
+        ? `🔴 **只回「${only.replace(/^@+/, '')}」这一个人** —— 名单里只会有他的留言；`
+          + `**别人回复到你那条评论下面，一律不理**（这是使用者定的规矩：只跟他说话 ✓）。`
+        : `⚠️ 设置里关掉了「只回我 @ 的那个人」⇒ 名单里可能有别人（不是使用者本人）；回的时候更要守红线。`)
       + `⭐ 宿主已经替你把「谁在等你回话」拉好了（下面那份名单，也存成了 ${inboxFile}）：`
       + `**优先按名单回** —— 名单里每条都写明了 bili_reply 要填的 bvid / rpid / root，照抄就行；`
       + `别自己去几百条评论里翻（翻不全，还费钱）。回完把「BV + 对方那条 rpid + root + 时间 + 你回的正文前 20 字」记进判重表的评论记录。`
@@ -634,7 +680,9 @@ export function apply(ctx, config) {
         + `⏰ **这一轮只做一件事：把评论区里等你回话的人回掉。** 不要搜视频、不要挑视频、不要写日报。\n`
         + `先读章程 ${duty}（里面「评论区来回对话」那节的纪律与红线照样管你），然后：\n`
         + replyVoiceLine() + `\n`
-        + `1. 把名单**逐条读完**（那是真的评论区原文，不是摘要）。\n`
+        + `1. 把名单**逐条读完**（那是真的评论区原文，不是摘要）。`
+        + `名单上的人就是使用者本人（宿主已按设置筛过：别人回的留言根本不会出现在名单里）`
+        + `🔴 —— 所以名单之外的任何评论，**一律不理**，也不要自己去翻。\n`
         + `2. 每人回一句：短句、口语、按使用者的设定说话，**每条正文 ≤100 字**；用 bili_reply 发，`
         + `bvid / rpid / root **照名单里给的填**（rpid = 要回的那条评论，root = 那一串的根评论）—— 别自己改号、别自己猜。\n`
         + `3. 名单里每条都写了「还能回几轮」，**到顶的那条就别回了**。\n`
@@ -766,7 +814,7 @@ export function apply(ctx, config) {
     let inbox = null
     if (mode === 'chat' || cfg.replyToComments) {
       try {
-        inbox = await buildInbox(stateDir, { depth: Math.max(1, Number(cfg.replyDepth) || 5), log })
+        inbox = await buildInboxForMe()
         try {
           writeFileSync(inboxFile, `# 谁在等你回话 · ${new Date().toISOString()}\n\n${inbox.text || '（没人在等）'}\n`, 'utf8')
         } catch (e) { log(`写 ${inboxFile} 失败：${e?.message ?? e}`) }
@@ -1128,12 +1176,13 @@ export function apply(ctx, config) {
       const patch = {}
       for (const k of ['perDay', 'peakValley', 'noon', 'night', 'autoComment', 'transcribe', 'asrModel',
         'commentPerRound', 'mentionName',
-        'keywords', 'pythonPath', 'dshBin', 'headlessProfile', 'workspace', 'reportLevel', 'replyToComments', 'replyPerRound', 'replyDepth']) {
+        'keywords', 'pythonPath', 'dshBin', 'headlessProfile', 'workspace', 'reportLevel', 'replyToComments', 'replyPerRound', 'replyDepth', 'replyOnlyMention']) {
         if (k in body) patch[k] = body[k]
       }
       if ('perDay' in patch) patch.perDay = Math.max(0, Math.min(Number(patch.perDay) || 0, 50))
       if ('reportLevel' in patch) patch.reportLevel = ['full', 'brief', 'off'].includes(String(patch.reportLevel)) ? String(patch.reportLevel) : 'full'
       if ('replyToComments' in patch) patch.replyToComments = Boolean(patch.replyToComments)
+      if ('replyOnlyMention' in patch) patch.replyOnlyMention = Boolean(patch.replyOnlyMention)
       if ('replyPerRound' in patch) patch.replyPerRound = Math.max(1, Math.min(Number(patch.replyPerRound) || 1, 10))
       // ⭐ 来回上限：1～30。夹住是因为它是"不拉锯"的那道闸 —— 填错一个 0 或 999 都不该发生
       if ('replyDepth' in patch) patch.replyDepth = Math.max(1, Math.min(Number(patch.replyDepth) || 1, 30))
@@ -1158,8 +1207,12 @@ export function apply(ctx, config) {
 
     // ⭐ 「谁在等我回话」：只读，把收件箱原样给设置页（含每条要填的 rpid / root）
     if (req.method === 'GET' && path === '/api/bili-duty/inbox') {
-      const r = await buildInbox(stateDir, { depth: Math.max(1, Number(cfg.replyDepth) || 5), log })
-      return sendJson(res, 200, { ok: r.ok, error: r.error || '', waiting: r.items.length, scanned: r.scanned, skipped: r.why, text: r.text, items: r.items })
+      const r = await buildInboxForMe()
+      return sendJson(res, 200, {
+        ok: r.ok, error: r.error || '', waiting: r.items.length, scanned: r.scanned,
+        skipped: r.why, text: r.text, items: r.items,
+        onlyFor: r.onlyName || '', owner: r.owner?.mid ? r.owner : null,
+      })
     }
 
     // 建 venv + 装依赖（**不等它**：几分钟的活，进度写 install.log）

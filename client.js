@@ -224,8 +224,11 @@ window.__ModuleLoader__.load({
         try {
           const r = await jget('/inbox')
           if (!r || !r.ok) { setInbox({ waiting: 0, text: (r && r.error) || '读不到名单' }); say((r && r.error) || '读不到名单', 'warn'); return }
+          const who = r.onlyFor
+            ? `（只认「${r.onlyFor}」${r.owner && r.owner.mid ? '，UID 已认下' : '，还没认到人'}）`
+            : '（没开「只回我 @ 的那个人」⇒ 名单里可能有别人）'
           setInbox({ waiting: r.waiting, text: r.text })
-          say(r.waiting ? `有 ${r.waiting} 个人在等你回话` : '现在没有人在等你回话', r.waiting ? 'good' : '')
+          say((r.waiting ? `有 ${r.waiting} 个人在等你回话` : '现在没有人在等你回话') + ' ' + who, r.waiting ? 'good' : '')
         } catch (e) { say(String(e?.message ?? e), 'warn') } finally { setBusy('') }
       }
 
@@ -401,7 +404,7 @@ window.__ModuleLoader__.load({
           h('div', { 'data-bd-h': '' }, '它会不会替你说话'),
           h(ToggleRow, {
             label: '评论区来回对话（只回楼中楼）',
-            note: '默认关；开了之后它只在你那条评论下面那一串里说话 —— 你说一句它接一句，能来回；到了来回上限就收住，不参与别人的讨论',
+            note: '默认关；开了之后它只在你那条评论下面那一串里说话 —— 你说一句它接一句，能来回；默认**只跟你**说话，别人回它一律不理',
             on: sw('replyToComments'),
             onChange: (v) => patch({ replyToComments: v }, '评论区来回对话'),
           }),
@@ -426,6 +429,14 @@ window.__ModuleLoader__.load({
                 onChange: (e) => setReplyDepth(e.target.value),
                 onBlur: () => { const n = Math.max(1, Math.min(Number(replyDepth) || 1, 30)); setReplyDepth(String(n)); patch({ replyDepth: n }, '最多来回几轮') },
               })),
+            h(ToggleRow, {
+              label: '只回我 @ 的那个人',
+              note: (cfg.mentionName || '').trim()
+                ? `只有「${String(cfg.mentionName).replace(/^@+/, '')}」的留言会进名单 —— 别人回复到它那条评论下面，一律不理`
+                : '⚠️ 「要 @ 谁」（在上面「自动评论并 @ 你」里）还空着 —— 那样它认不出你，会谁都不回',
+              on: sw('replyOnlyMention'),
+              onChange: (v) => patch({ replyOnlyMention: v }, '只回我 @ 的那个人'),
+            }),
             h('div', { 'data-bd-note': '' },
               '定时那一轮会自己看一眼有没有人等它回话；想让它**立刻**接话就点右边这个 —— 只看消息、不刷视频，很快。'),
             h('div', { 'data-bd-row': '' },
