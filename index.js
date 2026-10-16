@@ -96,6 +96,13 @@ export const Config = !z ? undefined : z.object({
    *    （认人先按 UID、再按昵称认第一次，见 lib/threads.mjs）
    */
   replyOnlyMention: z.boolean().default(true).extra('volatile', true),
+  /**
+   * ⭐⭐ **在任意评论区 @ 它，它也能出来**（默认开）。
+   *    2026-10-16 使用者：「我希望在其他评论区@他他也能出来和我聊天」。
+   *    靠的是 B站 自己的「收到的@」消息流（`/x/msgfeed/at`）—— 插件不可能去全网扫评论 ✗。
+   *    ⚠️ 只能起头：回话那一下仍然是**在对方那条评论下面**（楼中楼），不会到处新开一层 ✓
+   */
+  replyToMentions: z.boolean().default(true).extra('volatile', true),
 })
 
 /**
@@ -168,7 +175,7 @@ export function apply(ctx, config) {
    */
   const DEFAULTS = {
     perDay: 5, peakValley: false, noon: true, night: true, autoComment: false, transcribe: false, asrModel: 'small',
-    keywords: [], commentPerRound: 1, mentionName: '', pythonPath: 'python', dshBin: '', headlessProfile: 'headless', overlayMcp: true, workspace: '', reportLevel: 'full', replyToComments: false, replyPerRound: 1, replyDepth: 5, replyOnlyMention: true,
+    keywords: [], commentPerRound: 1, mentionName: '', pythonPath: 'python', dshBin: '', headlessProfile: 'headless', overlayMcp: true, workspace: '', reportLevel: 'full', replyToComments: false, replyPerRound: 1, replyDepth: 5, replyOnlyMention: true, replyToMentions: true,
   }
   const normalize = (src, base) => {
     const out = { ...base }
@@ -429,6 +436,8 @@ export function apply(ctx, config) {
         // ⭐ 名单里只有谁（空 = 没开"只回我 @ 的那个人"）
         onlyFor: r.onlyName || undefined,
         owner: r.owner?.mid ? r.owner : undefined,
+        // ⭐ 我们自己的账号 —— 使用者要靠它知道"@ 哪个名字能把它叫出来"
+        me: r.me || undefined,
         waiting: r.items.length,
         scanned: r.scanned,
         skipped: r.why,
@@ -475,6 +484,8 @@ export function apply(ctx, config) {
         loggedIn: hasCredential(),
         home: stateDir,
         report: join(outDir, `${dayKey(now)}.md`),
+        // ⭐ 本账号昵称 —— 使用者要在评论区 @ 这个名字才能把它叫出来
+        accountName: (() => { try { return String(readJson(join(stateDir, 'conversation.json'), {})?.me?.uname || '') } catch { return '' } })(),
       }
     },
   })
@@ -614,10 +625,10 @@ export function apply(ctx, config) {
     return buildInbox(stateDir, {
       depth: Math.max(1, Number(cfg.replyDepth) || 5),
       onlyName: replyOnlyNameNow(),
+      includeAt: Boolean(cfg.replyToMentions),
       log,
     })
   }
-
 
   /** 「评论区来回对话」那一段开关说明 —— 跑一轮和「立刻回话」两处共用同一份口径 */
   const replyVoiceLine = () => {
@@ -632,6 +643,11 @@ export function apply(ctx, config) {
         ? `🔴 **只回「${only.replace(/^@+/, '')}」这一个人** —— 名单里只会有他的留言；`
           + `**别人回复到你那条评论下面，一律不理**（这是使用者定的规矩：只跟他说话 ✓）。`
         : `⚠️ 设置里关掉了「只回我 @ 的那个人」⇒ 名单里可能有别人（不是使用者本人）；回的时候更要守红线。`)
+      + (cfg.replyToMentions
+        ? `⭐ 另外「收到的 @」也一起看：他在**别的视频的评论区 @ 了它**的话，也会进名单`
+          + `（名单里会标「⭐ 这是他在别的视频的评论区 @ 了你」）—— 那一条**就在他这条评论下面回**（楼中楼），`
+          + `**不要新开一层**；回完照常记账。`
+        : `（「别人在别的评论区 @ 它」这一路关着 —— 只看它自己发过评论的那几串。）`)
       + `⭐ 宿主已经替你把「谁在等你回话」拉好了（下面那份名单，也存成了 ${inboxFile}）：`
       + `**优先按名单回** —— 名单里每条都写明了 bili_reply 要填的 bvid / rpid / root，照抄就行；`
       + `别自己去几百条评论里翻（翻不全，还费钱）。回完把「BV + 对方那条 rpid + root + 时间 + 你回的正文前 20 字」记进判重表的评论记录。`
@@ -1160,6 +1176,9 @@ export function apply(ctx, config) {
       installTail: (() => { try { return readFileSync(installLogFile, 'utf8').slice(-1400) } catch { return '' } })(),
       report: join(outDir, `${today}.md`),
       log: logFile,
+      // ⭐ 我们自己的 B站 昵称（从对话账本里读，**不发请求** —— 状态每 5 秒被轮询一次）
+      //    设置页要靠它显示「在任意评论区 @ 这个名字就能把它叫出来」
+      accountName: (() => { try { return String(readJson(join(stateDir, 'conversation.json'), {})?.me?.uname || '') } catch { return '' } })(),
     }
   }
 
@@ -1176,13 +1195,14 @@ export function apply(ctx, config) {
       const patch = {}
       for (const k of ['perDay', 'peakValley', 'noon', 'night', 'autoComment', 'transcribe', 'asrModel',
         'commentPerRound', 'mentionName',
-        'keywords', 'pythonPath', 'dshBin', 'headlessProfile', 'workspace', 'reportLevel', 'replyToComments', 'replyPerRound', 'replyDepth', 'replyOnlyMention']) {
+        'keywords', 'pythonPath', 'dshBin', 'headlessProfile', 'workspace', 'reportLevel', 'replyToComments', 'replyPerRound', 'replyDepth', 'replyOnlyMention', 'replyToMentions']) {
         if (k in body) patch[k] = body[k]
       }
       if ('perDay' in patch) patch.perDay = Math.max(0, Math.min(Number(patch.perDay) || 0, 50))
       if ('reportLevel' in patch) patch.reportLevel = ['full', 'brief', 'off'].includes(String(patch.reportLevel)) ? String(patch.reportLevel) : 'full'
       if ('replyToComments' in patch) patch.replyToComments = Boolean(patch.replyToComments)
       if ('replyOnlyMention' in patch) patch.replyOnlyMention = Boolean(patch.replyOnlyMention)
+      if ('replyToMentions' in patch) patch.replyToMentions = Boolean(patch.replyToMentions)
       if ('replyPerRound' in patch) patch.replyPerRound = Math.max(1, Math.min(Number(patch.replyPerRound) || 1, 10))
       // ⭐ 来回上限：1～30。夹住是因为它是"不拉锯"的那道闸 —— 填错一个 0 或 999 都不该发生
       if ('replyDepth' in patch) patch.replyDepth = Math.max(1, Math.min(Number(patch.replyDepth) || 1, 30))
@@ -1212,6 +1232,7 @@ export function apply(ctx, config) {
         ok: r.ok, error: r.error || '', waiting: r.items.length, scanned: r.scanned,
         skipped: r.why, text: r.text, items: r.items,
         onlyFor: r.onlyName || '', owner: r.owner?.mid ? r.owner : null,
+        me: r.me || null,
       })
     }
 

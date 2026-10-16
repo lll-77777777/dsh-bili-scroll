@@ -143,6 +143,23 @@ ok(cli.includes('只回我 @ 的那个人'), 'client.js 没有「只回我 @ 的
 ok(duty.includes('只回复我就行了，不理其他人'), 'duty.md 没写"只回使用者本人"这条规矩')
 ok(duty.includes('一律不理'), 'duty.md 没写"名单之外一律不理"')
 
+// ⑬ 「在其他评论区 @ 它也能叫它出来」（2026-10-16 使用者："我希望在其他评论区@他他也能出来和我聊天"）
+ok(api.includes('export async function fetchAtFeed'), 'bili-api.mjs 没读「收到的@」那路接口')
+ok(api.includes('/x/msgfeed/at'), '「收到的@」的地址不对')
+ok(api.includes('export function parseAtUri'), 'bili-api.mjs 没从 uri 里抠 BV / rpid')
+ok(api.includes('export async function bvidOfAid'), 'bili-api.mjs 没有 aid→BV（那条路只给 aid）')
+ok(threads.includes('function pick('), 'threads.mjs 没有防御式取值（那个接口没有权威字段表）')
+ok(threads.includes('export function normalizeAtItem'), 'threads.mjs 没有把「@我」一条归一化')
+ok(threads.includes('@我的不是本人（不理）'), '「@我」那一路没走"只回本人"的白名单')
+ok(threads.includes('这条 @ 已经回过了'), '「@我」那一路没做"回过了就不再回"的去重')
+ok(threads.includes("via: 'at'"), '「@我」的条目没标来源（提示词分不清该往哪儿回）')
+ok(idx.includes("replyToMentions: z.boolean().default(true)"), 'replyToMentions 默认不是 true')
+ok(idx.includes('includeAt: Boolean(cfg.replyToMentions)'), '收件箱没把 replyToMentions 传下去')
+ok(idx.includes('accountName'), 'status/tool 没把本账号昵称给出去（使用者不知道 @ 谁）')
+ok(cli.includes('在别人的评论区 @ 它'), 'client.js 没有「在别人的评论区 @ 它」开关')
+ok(duty.includes('永远不新开一层'), 'duty.md 没写"永远不新开一层"（刷屏红线）')
+ok(duty.includes('他 @ 你那条评论'), 'duty.md 没写"@ 我那条要怎么回"')
+
 console.log(fail.length ? '❌ 有 ' + fail.length + ' 条没过（共 ' + total + ' 条）：' : `✅ 全部 ${total} 条断言通过`)
 for (const f of fail) console.log('   - ' + f)
 process.exit(fail.length ? 1 : 0)

@@ -437,6 +437,16 @@ window.__ModuleLoader__.load({
               on: sw('replyOnlyMention'),
               onChange: (v) => patch({ replyOnlyMention: v }, '只回我 @ 的那个人'),
             }),
+            h(ToggleRow, {
+              label: '在别人的评论区 @ 它，也能把它叫出来',
+              note: '默认开；你在任意视频的评论区打『@' + (st.accountName || '本账号昵称') + '』，它就会看到，并在你那条评论下面回你',
+              on: sw('replyToMentions'),
+              onChange: (v) => patch({ replyToMentions: v }, '在别人的评论区 @ 它'),
+            }),
+            h('div', { 'data-bd-note': '' },
+              st.accountName
+                ? `⭐ 想主动找它聊：在**任意**视频的评论区 @${st.accountName} 就行（它靠 B站 的「收到的@」看到你）。`
+                : '⭐ 想主动找它聊：在任意评论区 @ 它这个账号 —— 昵称要跑一轮（或点一次「看谁在等我回话」）才会显示出来。'),
             h('div', { 'data-bd-note': '' },
               '定时那一轮会自己看一眼有没有人等它回话；想让它**立刻**接话就点右边这个 —— 只看消息、不刷视频，很快。'),
             h('div', { 'data-bd-row': '' },
