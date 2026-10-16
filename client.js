@@ -463,6 +463,9 @@ window.__ModuleLoader__.load({
               on: sw('replyOnlyMention'),
               onChange: (v) => patch({ replyOnlyMention: v }, '只回我 @ 的那个人'),
             }),
+            sw('replyOnlyMention') ? h('div', { 'data-bd-note': '' },
+              '🔒 这道闸**不只写在提示词里**：发出去那一下还会**再去核一遍「要回的那条是谁写的」** —— '
+              + '不是你就直接拒发（认不出来也一样不发）。所以就算它哪一轮判断失误，也说不出一句给别人的话。') : null,
             h(ToggleRow, {
               label: '在别人的评论区 @ 它，也能把它叫出来',
               note: '默认开；你在任意视频的评论区打『@' + (st.accountName || '本账号昵称') + '』，它就会看到，并在你那条评论下面回你',

@@ -51,7 +51,8 @@ ok(!duty.includes('判重表就在家目录根下'), 'duty.md 里旧的"家目�
 
 // ④ 编码
 ok(idx.includes("PYTHONUTF8: '1'"), 'index.js 里没有 PYTHONUTF8')
-ok(idx.includes('env: pyEnv(),'), '内置 MCP 的 env 没走 pyEnv')
+// ⚠️ 别写成 `env: pyEnv(),` —— 后来给宿主自己起的那份 MCP 也带上了 BILI_DUTY_HOME（机器闸要用）
+ok(/env: pyEnv\(\{[^}]*BILI_DUTY_HOME/.test(idx) || idx.includes('env: pyEnv(),'), '内置 MCP 的 env 没走 pyEnv')
 ok(asr.includes("sys.stdout.reconfigure(encoding='utf-8'"), 'asr.py 没有 reconfigure stdout')
 
 // ⑤ 设置页文案
@@ -196,6 +197,38 @@ ok(idx.includes("path === '/api/bili-duty/claim'"), '没有 /claim 路由')
 ok(idx.includes("name: 'bili_claim'"), '没有 bili_claim 工具')
 ok(cli.includes('收进账本'), 'client.js 没有「认领旧评论」的入口')
 ok(duty.includes('判重表') , 'duty.md 里判重表相关没写')
+
+// ⑯ 2026-10-17：「只回我」的**机器闸** —— 从"名单里不列别人"升级成"发出去那一下也拦得住"
+//    🔴 为什么非要这一层：跑一轮那个 headless 会话手上只有**裸 MCP**（那个 profile 里没有插件）
+//       ⇒ 插件这边的 bili_reply 工具不在链路上 ⇒ 名单层面的过滤**拦不住真发** ✗
+{
+  const py = read('vendor/bilibili-mcp/mcp_server.py')
+  ok(py.includes('async def reply_gate'), '内置 MCP 里没有"只回本人"的闸（reply_gate）')
+  ok(py.includes('_policy_note'), '闸拒了之后没有写日志（出问题查不出来）')
+  ok(py.includes('"blocked": True'), '拒发时没有 blocked 标记（调用方分不清"被闸拦住"和"发失败"）')
+  ok(py.includes('reply-policy.json'), 'MCP 没去读插件写的策略文件')
+  ok(py.includes('BILI_DUTY_HOME'), 'MCP 不知道怎么找插件的家目录')
+  ok(/if not pol:\s*\n\s*return True, ""/.test(py), '策略文件不存在时应该维持原版行为（谁都能回），别把闸焊死')
+  ok(py.includes('为安全起见不发'), '认不出来时没有 fail-closed（应该宁可不发）')
+  ok(py.includes('POLICY_FILE_NAME'), '策略文件名没有集中定义')
+  ok(py.indexOf('reply_gate') < py.indexOf('# ========== Tool 7'), 'reply_gate 定义跑到使用之后了')
+  ok(py.includes('await reply_gate(bvid, rpid, root, aid)'), 'bili_reply 没有真的调闸')
+  // 闸必须**在发出之前**：get_info 之后、send_comment 之前
+  ok(py.indexOf('await reply_gate') > py.indexOf('aid = info["aid"]'), '闸在取 aid 之前（核验要用 aid）')
+  ok(py.indexOf('await reply_gate') < py.indexOf('result = await comment.send_comment'), '闸居然在发出去之后才核 —— 等于没闸')
+}
+ok(idx.includes('const policyFile = join(stateDir'), 'index.js 没有策略文件的位置')
+ok(idx.includes('const writeReplyPolicy = (r) =>'), 'index.js 没有写策略的入口')
+ok(idx.includes('writeReplyPolicy(r)'), '算完名单没有刷新机器闸')
+ok(idx.includes('writeReplyPolicy(null)'), '插件刚起来时没有把闸武装好（没跑过一轮时就没闸）')
+ok(idx.includes("log(`「只回本人」机器闸："), '写策略时没留一行日志（出问题没法查）')
+ok(/const ownerMid = name \?/.test(idx), '昵称为空时不该把账本里的 UID 交出去（会和"谁都不回"的口径矛盾）')
+ok(idx.includes("by: 'force'"), 'force 没有做成"只给这一条开个口子"')
+ok(idx.includes('只针对这一条'), 'force 没有说明它只放行这一条（不能把整道闸关掉）')
+ok(idx.includes('BILI_DUTY_HOME: stateDir'), '宿主的 MCP 环境里没带 BILI_DUTY_HOME')
+ok(duty.includes('机器闸'), 'duty.md 没告诉它"发出去那一下还有一道闸"')
+ok(duty.includes('别去试'), 'duty.md 没写"别去试"（不然白花一次调用）')
+ok(cli.includes('发出去那一下还会'), 'client.js 的设置页没说明这道闸在哪一层')
 
 console.log(fail.length ? '❌ 有 ' + fail.length + ' 条没过（共 ' + total + ' 条）：' : `✅ 全部 ${total} 条断言通过`)
 for (const f of fail) console.log('   - ' + f)

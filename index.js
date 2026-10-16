@@ -245,7 +245,9 @@ export function apply(ctx, config) {
       cwd: stateDir,                     // 凭证落在家里 ✓
       // ⭐ 这个内置的 Python MCP 会往 stdout 打中文（ensure_ascii=False）；
       //    Windows 默认 GBK 的话，中文/emoji 一进管道就可能炸 ⇒ 钉死 UTF-8
-      env: pyEnv(),
+      // ⭐ BILI_DUTY_HOME：让 MCP 知道"家"在哪 —— 它要靠这个位置读「只回本人」策略
+      //    （`reply-policy.json`）。不传也能靠脚本自己的位置推出来，传了更明确 ✓
+      env: pyEnv({ BILI_DUTY_HOME: stateDir }),
       log,
     })
     return mcp
@@ -365,6 +367,27 @@ export function apply(ctx, config) {
             ? '要回楼中楼得先在设置里打开「评论区来回对话」。或者本人当场让你发时传 force: true。'
             : '要发新评论得同时满足两条：设置里开着「自动评论并 @ 你」、并且填了「要 @ 谁」。或者本人当场让你发时传 force: true。',
         }
+      }
+      /**
+       * ⭐⭐ `force` = "本人当场让你发"（交互里使用者亲口说的）。
+       * 🔴 它**只给这一次、指名道姓**地开个口子（写进策略的 `allow` / 打开 `allowNewComment`），
+       *    **绝不把整道闸关掉** —— 关掉的话，下一轮自动跑也会跟着变成"谁都能回" ✗
+       * ⚠️ 这跟 `replyOnlyMention` 那道闸是两件事：force 越过的是"开关没开"，
+       *    不是"只回本人"。真想让插件去回别人，得使用者自己在设置里关掉那个开关 ✓
+       */
+      if (args.force) {
+        try {
+          const j = readJson(policyFile, {})
+          if (rpid) {
+            const list = (Array.isArray(j.allow) ? j.allow : []).filter((e) => Number(e?.rpid) !== rpid)
+            list.push({ bv: bvid, rpid, root: root || rpid, by: 'force', at: new Date().toISOString() })
+            writeJson(policyFile, { ...j, allow: list })
+            log(`本人当场放行一次：${bvid} rpid=${rpid}（只针对这一条）`)
+          } else {
+            writeJson(policyFile, { ...j, allowNewComment: true })
+            log(`本人当场放行一次：允许发一条新的顶层评论`)
+          }
+        } catch (e) { log(`写"放行一次"口子失败：${e?.message ?? e}`) }
       }
       const r = await call('bili_reply', {
         bvid,
@@ -662,27 +685,79 @@ export function apply(ctx, config) {
   const replyOnlyNameNow = () => (cfg.replyOnlyMention ? String(cfg.mentionName || '').trim() : '')
 
   /**
+   * ⭐⭐ 「只回我 @ 的那个人」写成一份**机器能执行**的策略，交给内置 MCP 在**发出去那一刻**把关
+   *    （2026-10-17 加）。文件：`<家目录>/reply-policy.json`，读它的是 `mcp_server.py` 里的 `reply_gate()`。
+   *
+   * 🔴 为什么光有名单不够（真机上查出来的）：跑一轮的那个 headless 会话**是另一个进程**，
+   *    它那个 profile 里没有本插件 ⇒ 它手上只有 overlay 挂的那个**裸 Python MCP** ⇒
+   *    插件这边的 `bili_reply` 工具**根本不在链路上** ⇒ 原来"只回我"只做到"名单里不列别人"，
+   *    真到发出去那一下**没有任何东西拦得住** ✗（模型自己翻到一条别人的评论就能答）。
+   *    ⇒ 唯一能做机器级保证的位置，就是 MCP 那一层：**发之前先把"这条是谁写的"读出来核一遍**。
+   *
+   * ⚠️ 这份文件是"尽力而为地尽量新"：每次算名单（跑一轮 / 看名单 / 立刻回话）都会重写一份 ✓
+   *    写不出来（磁盘/权限）也不该让这一轮跑不成 —— 那时 MCP 看不到文件，退回原版行为。
+   */
+  const policyFile = join(stateDir, 'reply-policy.json')
+  const writeReplyPolicy = (r) => {
+    try {
+      const enabled = Boolean(cfg.replyOnlyMention)
+      const name = String(cfg.mentionName || '').trim()
+      /**
+       * UID：账本里钉过的那个（第一次按昵称认出来就钉死了）—— 有它就用 UID 认人（防冒名）。
+       * ⚠️ **昵称是空的时候不把 UID 交出去**：那种配置在插件这边是"认不出本人 ⇒ 这一轮谁都不回"
+       *    （见上面 `buildInboxForMe` 那道自查）⇒ 两边口径必须一样，
+       *    否则会出现"插件说谁都没回、MCP 那边却放过了本人"这种自相矛盾的状态 ✗
+       */
+      const ownerMid = name ? (Number(readJson(join(stateDir, 'conversation.json'), {})?.owner?.mid) || 0) : 0
+      const allow = (r?.items || [])
+        .map((it) => ({ bv: it.bv, rpid: Number(it.from?.rpid) || 0, root: Number(it.root) || 0, by: it.via || 'thread' }))
+        .filter((x) => x.rpid)
+      writeJson(policyFile, {
+        enabled,
+        owner: { mid: ownerMid, name },
+        allow,
+        // 发新的顶层评论（不是回话）算不算"拿使用者的号 @ 人" ⇒ 跟「自动评论并 @ 你」同一个口径
+        allowNewComment: Boolean(cfg.autoComment) && Boolean(name),
+        at: new Date().toISOString(),
+        note: '由 dsh-bili-scroll 写；给内置 MCP 的「只回本人」闸用。allow = 本轮名单里允许回的目标。',
+      })
+      log(`「只回本人」机器闸：${enabled
+        ? `只认 ${name || '（没填昵称 ⇒ 认不出谁，谁都不回）'}${ownerMid ? ` / UID ${ownerMid}` : ' / 还没认下 UID（按昵称认）'}`
+        : '白名单关着（谁都可能被回）'}；本轮放行 ${allow.length} 条；新评论${Boolean(cfg.autoComment) && Boolean(name) ? '可以发' : '不许发'}`)
+    } catch (e) { log(`写 reply-policy.json 失败（这一轮 MCP 那边就没有闸了）：${e?.message ?? e}`) }
+  }
+
+  /**
    * ⭐ 收件箱的唯一入口（跑一轮 / `bili_inbox` / `GET /inbox` 三处共用）。
    *
    * 顺手挡掉一种**危险配置**：「只回我 @ 的那个人」开着，但「要 @ 谁」是空的 ——
    * 这时谁都认不出来。**绝不能退化成"回所有人"**（那正是使用者最不想要的 ✗）⇒
    * 直接回一句"先去填昵称"，这一轮谁都不回 ✓
    */
-  const buildInboxForMe = () => {
+  const buildInboxForMe = async () => {
+    let r
     if (cfg.replyToComments && cfg.replyOnlyMention && !String(cfg.mentionName || '').trim()) {
-      return Promise.resolve({
+      r = {
         ok: false, items: [], text: '', scanned: 0, why: {},
         error: '「只回我 @ 的那个人」开着，但「要 @ 谁」（在下面「自动评论并 @ 你」里）是空的 —— '
           + '那样它认不出你，所以这一轮**谁都不回**。先把你回话用的那个 B站 昵称填上。',
+      }
+    } else {
+      r = await buildInbox(stateDir, {
+        depth: Math.max(1, Number(cfg.replyDepth) || 5),
+        onlyName: replyOnlyNameNow(),
+        includeAt: Boolean(cfg.replyToMentions),
+        log,
       })
     }
-    return buildInbox(stateDir, {
-      depth: Math.max(1, Number(cfg.replyDepth) || 5),
-      onlyName: replyOnlyNameNow(),
-      includeAt: Boolean(cfg.replyToMentions),
-      log,
-    })
+    // ⭐ 名单算完就顺手把机器闸刷新一遍（`r.items` 里正是"这一轮允许回的目标"）
+    writeReplyPolicy(r)
+    return r
   }
+
+  // ⭐ 插件一起来就把闸**武装好**：还没跑过一轮、也没人手动看过名单时，MCP 那边也得有闸
+  //    （这时没有名单 ⇒ `allow` 为空；认人靠 owner 的 UID / 昵称 ⇒ 只影响"能不能回别人" ✓）
+  writeReplyPolicy(null)
 
   /** 「评论区来回对话」那一段开关说明 —— 跑一轮和「立刻回话」两处共用同一份口径 */
   const replyVoiceLine = () => {

@@ -11,7 +11,9 @@ import asyncio
 import json
 import base64
 import os
+import re
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
@@ -21,6 +23,8 @@ from bilibili_api.video_uploader import (
     VideoUploader, VideoUploaderPage, VideoMeta, Lines,
 )
 from bilibili_api.utils.picture import Picture
+from bilibili_api.utils.network import Api
+from bilibili_api.utils.utils import get_api
 from bilibili_api.login_v2 import QrCodeLogin, QrCodeLoginEvents
 
 # ========== 初始化 ==========
@@ -55,6 +59,150 @@ def get_cred() -> Credential:
     if not cred:
         raise Exception("未登录B站！请先调用 bili_login 工具获取登录二维码，让用户扫码登录。")
     return cred
+
+
+# ============================================================================
+# ⭐⭐ 本仓库的小改动（2026-10-17）：回复白名单闸 —— 「只回复他本人，别人一律不理」
+# ============================================================================
+# 使用者定的规矩（2026-10-16 原话）：「只回复我就行了，不理其他人」。
+#
+# 🔴 为什么这道闸必须落在**这一层**（不是插件那一层）：
+#    跑一轮的那个 headless 会话，profile 里**没有插件**，它手上**只有这个 MCP**
+#    ⇒ 插件 host 半端的工具闸根本不在链路上 ⇒
+#    "只回我 @ 的那个人"原来只是"给那一轮的名单里不列别人"，**真到发出去那一下没人拦** ✗
+#    ⇒ 唯一能做成机器级保证的位置，就是这里：**发之前先把"要回的那条是谁写的"读出来核一遍**。
+#
+# 判据（跟插件那边 `lib/threads.mjs` 的 `isOwner` 保持同一口径）：
+#   ① 策略里钉了 UID（`owner.mid`）⇒ **只认这个 UID**（别人改成同一个昵称也没用）✓
+#   ② 只填了昵称 ⇒ 按昵称认（去掉开头的 @、空白、大小写；**不做模糊匹配**）
+#   ③ 两样都没有 ⇒ **谁都不回**（绝不退化成"回所有人"，那正是使用者最不想要的）
+#   ④ `allow` 里指名道姓列出来的（本人当场让发的 force）⇒ 直接放行
+#   ⑤ **认不出来就不发**（翻页/被删/网络错都算）—— 宁可沉默，也别把话说到别人那里去
+#
+# 策略文件由插件写在它的家目录（`BILI_DUTY_HOME`，退化到脚本所在目录）：
+#   `reply-policy.json` = { enabled, owner:{mid,name}, allow:[{bv,rpid,root}], allowNewComment }
+# ⚠️ **文件不存在 ⇒ 完全维持原版行为**（谁都能回）—— 不改上游语义，只有插件在管时才生效 ✓
+# ============================================================================
+
+POLICY_FILE_NAME = "reply-policy.json"
+
+
+def _duty_home() -> Path:
+    home = os.environ.get("BILI_DUTY_HOME") or ""
+    return Path(home) if home else Path(__file__).resolve().parent
+
+
+def load_reply_policy() -> dict:
+    """读插件的策略文件（读不到 / 坏了 ⇒ 空 dict ⇒ 维持原版行为）"""
+    try:
+        p = _duty_home() / POLICY_FILE_NAME
+        if not p.exists():
+            return {}
+        j = json.loads(p.read_text(encoding="utf-8"))
+        return j if isinstance(j, dict) else {}
+    except Exception:
+        return {}
+
+
+def _policy_note(msg: str) -> None:
+    """往插件的 duty.log 追加一行（跟 host 半端同格式）—— 拒了谁、为什么，一眼能查"""
+    try:
+        now = datetime.now(timezone.utc)
+        stamp = now.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (now.microsecond // 1000)
+        with open(_duty_home() / "duty.log", "a", encoding="utf-8") as f:
+            f.write("%s  %s\n" % (stamp, msg))
+    except Exception:
+        pass
+
+
+def _norm_name(s) -> str:
+    """昵称归一化：只做能想到的无害处理（不做模糊匹配 —— 替人说话这件事上模糊匹配太危险）"""
+    return re.sub(r"\s+", "", re.sub(r"^@+", "", str(s or ""))).lower()
+
+
+async def _comment_author(oid: int, rpid: int, root: int, pages: int = 3):
+    """只读：查出「要回的那条评论」是谁写的。拿不到就返回 None（**不猜**）。
+
+    走 `/x/v2/reply/reply`（楼中楼）—— 它同时给出 `data.root`（根评论本身）和 `data.replies`
+    （下面的回复），所以"回根评论"和"回楼中楼"两种情况都能定位到人 ✓
+
+    ⚠️ 实测（2026-10-17）：评论不存在时这条接口是**抛异常**（`12006 没有该评论`），
+       不是回空 —— 所以要接住；接住之后按"认不出来"处理（调用方会 fail-closed ⇒ 不发）
+    """
+    api = get_api("common", "comment", "sub_reply")
+    actual_root = root if root else rpid
+    for pn in range(1, max(1, int(pages)) + 1):
+        try:
+            data = await Api(**api, credential=get_cred()).update_params(
+                type=1, oid=oid, root=actual_root, pn=pn, ps=49
+            ).result
+        except Exception:
+            return None
+        if not isinstance(data, dict):
+            return None
+        hit = None
+        rt = data.get("root") or {}
+        if int(rt.get("rpid") or 0) == int(rpid):
+            hit = rt
+        else:
+            for x in (data.get("replies") or []):
+                if int(x.get("rpid") or 0) == int(rpid):
+                    hit = x
+                    break
+        if hit is not None:
+            m = hit.get("member") or {}
+            return {"mid": int(m.get("mid") or 0), "uname": str(m.get("uname") or "")}
+        if len(data.get("replies") or []) < 49:
+            break        # 这串到底了，再翻也是空的
+    return None
+
+
+async def reply_gate(bvid: str, rpid: int, root: int, oid: int):
+    """发之前过一遍闸。返回 (能不能发, 不能发的原因)。
+
+    ⚠️ **失败一律按"不发"处理**（读不到策略以外的一切异常都算）——
+       使用者的要求是"别人一律不理"，把话说错的代价远大于这次沉默 ✓
+    """
+    pol = load_reply_policy()
+    if not pol:
+        return True, ""                              # 插件没在管 ⇒ 原版行为
+    if not pol.get("enabled"):
+        return True, ""                              # 使用者自己关掉了「只回我 @ 的那个人」
+
+    if int(rpid or 0) == 0:                          # 发新的顶层评论（不是回话）
+        if pol.get("allowNewComment"):
+            return True, ""
+        return False, "设置里没开「自动评论并 @ 你」⇒ 不许发新的顶层评论（这一轮只许回话）"
+
+    allow = pol.get("allow") or []
+    for e in allow:
+        if not isinstance(e, dict):
+            continue
+        if int(e.get("rpid") or 0) != int(rpid):
+            continue
+        if e.get("bv") and str(e.get("bv")) != str(bvid):
+            continue
+        return True, ""                              # 本人当场让发的（force）⇒ 放行
+
+    owner = pol.get("owner") or {}
+    o_mid = int(owner.get("mid") or 0)
+    o_name = _norm_name(owner.get("name"))
+    if not o_mid and not o_name:
+        return False, "白名单开着但没填「要 @ 谁」⇒ 认不出本人 ⇒ 谁都不回"
+
+    who = await _comment_author(oid, rpid, root)
+    if not who:
+        return False, "核对不到这条评论是谁写的（翻页/已删/读不到）⇒ 为安全起见不发"
+    if o_mid:
+        ok = int(who["mid"]) == o_mid
+    else:
+        ok = bool(who["mid"]) and _norm_name(who["uname"]) == o_name
+    if ok:
+        return True, ""
+    return False, "这条是「%s」（UID %s）写的，不是使用者本人「%s」（UID %s）⇒ 不理" % (
+        who["uname"] or "（没名字）", who["mid"] or "？",
+        owner.get("name") or "（没填）", o_mid or "（没钉 UID，按昵称认）",
+    )
 
 
 # ========== Tool: 扫码登录（生成二维码） ==========
@@ -485,6 +633,23 @@ async def bili_reply(bvid: str, text: str, rpid: int = 0, root: int = 0) -> str:
     v = video.Video(bvid=bvid, credential=cred)
     info = await v.get_info()
     aid = info["aid"]
+
+    # ⭐⭐ 本仓库的小改动（2026-10-17）：「只回本人」的机器闸 —— **发之前**先核一遍。
+    #    这里拒掉的话，一个字都不会发出去（使用者的规矩：别人一律不理）。
+    #    ⚠️ 核验本身出错也按"不发"处理（fail-closed）—— 说错话的代价远大于这次沉默。
+    try:
+        _ok, _why = await reply_gate(bvid, rpid, root, aid)
+    except Exception as e:
+        _ok, _why = False, "核验「这条是不是本人写的」时出错（%s）⇒ 为安全起见不发" % e
+    if not _ok:
+        _policy_note(
+            "只回本人：拒了一条%s（%s rpid=%s）—— %s"
+            % ("新评论" if int(rpid or 0) == 0 else "回话", bvid, rpid, _why)
+        )
+        return json.dumps(
+            {"success": False, "blocked": True, "reason": _why, "message": "没发出去：" + _why},
+            ensure_ascii=False,
+        )
 
     try:
         if rpid == 0:
