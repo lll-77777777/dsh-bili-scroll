@@ -129,6 +129,25 @@ export function apply(ctx, config) {
   }
   const stateDir = stateDirOf(ctx)
 
+  /**
+   * ⭐ 「**我加载的那份代码**」和「**磁盘上现在那份**」是不是同一个（2026-10-16 加）。
+   *
+   * 为什么要有它 —— 一次真实的困惑（使用者当场踩到）：
+   *   他把插件文件拷进 DSH 的插件目录之后**没有完全退出 DSH**（刷新页面不算）⇒
+   *   **页面是新的**（client 半端是浏览器现拉的）、**宿主半端还是旧的** ⇒
+   *   新开关发出去的设置在旧宿主那里被白名单滤掉、`patch` 变成 `{}`、
+   *   按钮点了**一点反应都没有**、也不知道为什么 ⇒ 只能靠猜 ✗
+   * 现在：启动时记下 `index.js` 的指纹，`/status` 时再算一次 —— 不一致就明说
+   *   「**磁盘上的比正在跑的新，完全退出 DSH 再打开**」 ✓
+   * ⭐ 为什么指纹用 size+mtime 而不是读内容：它只在本机自己人之间比，够用且零成本
+   *    （真相的来源本来就是"同一个文件"）。
+   */
+  const codeFingerprint = () => {
+    try { const s = statSync(join(pluginDir, 'index.js')); return `${s.size}:${Math.round(s.mtimeMs)}` }
+    catch { return '' }
+  }
+  const bootFingerprint = codeFingerprint()
+
   // ⭐ "就绪"必须检查依赖真的装上了，不能只看目录存不存在
   //    （2026-10-15：只看目录，害一位真实用户"显示就绪但其实装失败"白折腾 ✗）
   const sitePkgs = (venvRoot) => {
@@ -1179,6 +1198,9 @@ export function apply(ctx, config) {
       // ⭐ 我们自己的 B站 昵称（从对话账本里读，**不发请求** —— 状态每 5 秒被轮询一次）
       //    设置页要靠它显示「在任意评论区 @ 这个名字就能把它叫出来」
       accountName: (() => { try { return String(readJson(join(stateDir, 'conversation.json'), {})?.me?.uname || '') } catch { return '' } })(),
+      // ⭐ 跑着的那份 vs 磁盘上那份（不一致 ⇒ 改了文件但 DSH 没重新加载；设置页会顶一条警告）
+      staleCode: Boolean(bootFingerprint) && bootFingerprint !== codeFingerprint(),
+      codeFile: join(pluginDir, 'index.js'),
     }
   }
 
@@ -1192,11 +1214,18 @@ export function apply(ctx, config) {
 
     if (req.method === 'POST' && path === '/api/bili-duty/config') {
       const body = await readBody(req)
+      /**
+       * ⭐ 白名单 = `DEFAULTS` 的键，**不再手抄一份**。
+       * 🔴 教训（2026-10-16 真实发生）：这份名单原来是一串手写的字段名，加了新字段忘了加进来 ⇒
+       *    设置页把新值发过来、宿主把它滤掉、`patch` 成了 `{}`、**按钮点了毫无反应**，
+       *    使用者只能看到一个"灰的/没反应"的开关 ✗。现在从 DEFAULTS 派生 ⇒ 不可能再漂 ✓
+       */
+      const allowed = Object.keys(DEFAULTS)
       const patch = {}
-      for (const k of ['perDay', 'peakValley', 'noon', 'night', 'autoComment', 'transcribe', 'asrModel',
-        'commentPerRound', 'mentionName',
-        'keywords', 'pythonPath', 'dshBin', 'headlessProfile', 'workspace', 'reportLevel', 'replyToComments', 'replyPerRound', 'replyDepth', 'replyOnlyMention', 'replyToMentions']) {
-        if (k in body) patch[k] = body[k]
+      const ignored = []
+      for (const k of Object.keys(body || {})) {
+        if (allowed.includes(k)) patch[k] = body[k]
+        else ignored.push(k)
       }
       if ('perDay' in patch) patch.perDay = Math.max(0, Math.min(Number(patch.perDay) || 0, 50))
       if ('reportLevel' in patch) patch.reportLevel = ['full', 'brief', 'off'].includes(String(patch.reportLevel)) ? String(patch.reportLevel) : 'full'
@@ -1207,8 +1236,9 @@ export function apply(ctx, config) {
       // ⭐ 来回上限：1～30。夹住是因为它是"不拉锯"的那道闸 —— 填错一个 0 或 999 都不该发生
       if ('replyDepth' in patch) patch.replyDepth = Math.max(1, Math.min(Number(patch.replyDepth) || 1, 30))
       saveCfg(patch)
-      log(`设置已更新：${JSON.stringify(patch)}`)
-      return sendJson(res, 200, { ok: true, config: cfg })
+      log(`设置已更新：${JSON.stringify(patch)}${ignored.length ? `（⚠️ 这一份不认识这几个字段：${ignored.join('、')} —— 多半是改了文件没重启 dsh）` : ''}`)
+      // ⭐ 把"没认出来的字段"回给设置页 —— 让"点了没反应"变成一个**看得见的原因**，别再让人猜 ✓
+      return sendJson(res, 200, { ok: true, config: cfg, applied: Object.keys(patch), ignored })
     }
 
     if (req.method === 'POST' && path === '/api/bili-duty/run') {

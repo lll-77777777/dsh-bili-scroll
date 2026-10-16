@@ -160,6 +160,28 @@ ok(cli.includes('在别人的评论区 @ 它'), 'client.js 没有「在别人的
 ok(duty.includes('永远不新开一层'), 'duty.md 没写"永远不新开一层"（刷屏红线）')
 ok(duty.includes('他 @ 你那条评论'), 'duty.md 没写"@ 我那条要怎么回"')
 
+// ⑭ 「设置写了没反应」这一类：白名单别手抄 + 跑着的那份变旧要能看出来（2026-10-16 使用者当场踩到）
+ok(idx.includes('const allowed = Object.keys(DEFAULTS)'), '设置白名单又是手抄的一份（迟早和 DEFAULTS 漂开，新字段会被静默丢掉）')
+ok(!/for \(const k of \['perDay'/.test(idx), '还留着那份手抄的字段名单')
+ok(idx.includes('ignored'), 'POST /config 没把"没认出来的字段"回给设置页')
+ok(idx.includes('staleCode'), 'status 没有"跑着的那份 vs 磁盘上那份"的对比')
+ok(idx.includes('const codeFingerprint'), '没有代码指纹函数（改了文件没重启就看不出来）')
+ok(cli.includes('完全退出 DSH'), 'client.js 没有"完全退出 DSH 再打开"这条提示')
+ok(cli.includes('staleCode'), 'client.js 没在顶部显示"跑的不是这一份"')
+ok(cli.includes('r.ignored'), 'client.js 没处理宿主回过来的 ignored')
+// ⭐ 结构一致性：Config 的字段 与 DEFAULTS 的字段必须**完全一样**
+//    （Config 有、DEFAULTS 没有 ⇒ 那个字段永远读不到 config.json 里的值；反过来 ⇒ normalize 会把它吃掉）
+{
+  const cfgBlock = idx.slice(idx.indexOf('export const Config'), idx.indexOf('const pyEnv'))
+  const cfgKeys = [...cfgBlock.matchAll(/^\s{2}([a-zA-Z][\w]*):\s*z\./gm)].map((m) => m[1])
+  const dm = /const DEFAULTS = \{([\s\S]*?)\n  \}/.exec(idx)
+  const defKeys = dm ? [...dm[1].matchAll(/([a-zA-Z][\w]*):/g)].map((m) => m[1]) : []
+  ok(cfgKeys.length > 15, `Config 里只解析出 ${cfgKeys.length} 个字段（正则或写法变了？）`)
+  ok(defKeys.length > 15, `DEFAULTS 里只解析出 ${defKeys.length} 个字段（正则或写法变了？）`)
+  for (const k of cfgKeys) ok(defKeys.includes(k), `Config 里有 ${k}，但 DEFAULTS 里没有 ⇒ 它永远读不到 config.json 的值`)
+  for (const k of defKeys) ok(cfgKeys.includes(k), `DEFAULTS 里有 ${k}，但 Config 里没有 ⇒ normalize 会把它吃掉`)
+}
+
 console.log(fail.length ? '❌ 有 ' + fail.length + ' 条没过（共 ' + total + ' 条）：' : `✅ 全部 ${total} 条断言通过`)
 for (const f of fail) console.log('   - ' + f)
 process.exit(fail.length ? 1 : 0)

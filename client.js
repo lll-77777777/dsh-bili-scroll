@@ -174,7 +174,14 @@ window.__ModuleLoader__.load({
         try {
           const r = await jpost('/config', p)
           if (r?.config) setSt((old) => ({ ...old, config: r.config }))
-          say(what ? `${what}：已保存` : '已保存', 'good')
+          // ⭐ 宿主不认识这个字段 ⇒ 说明跑着的插件不是这一份（改了文件没重启 DSH）。
+          //    以前这里**什么都不说**：开关点了不动、也不知道为什么 ✗（2026-10-16 使用者踩到）
+          if (r && Array.isArray(r.ignored) && r.ignored.length) {
+            say(`这一份插件还不认识「${r.ignored.join('、')}」这个设置 —— 多半是你改过插件文件但 DSH 没重新加载。`
+              + `请**完全退出 DSH 再打开**（只刷新页面不够），然后再改一次。`, 'warn')
+          } else {
+            say(what ? `${what}：已保存` : '已保存', 'good')
+          }
         } catch (e) { say(String(e?.message ?? e), 'warn') }
         finally { setBusy('') }
       }
@@ -354,6 +361,11 @@ window.__ModuleLoader__.load({
       const sw = (k) => Boolean(cfg[k])
 
       return h('div', { 'data-bd-page': '' },
+
+        /* ── ⚠️ 跑着的那份 ≠ 磁盘上那份（改了文件没重启 DSH）── */
+        st.staleCode ? h('div', { 'data-bd-msg': '', 'data-warn': '' },
+          '⚠️ **磁盘上的插件代码比正在跑的这一份新** —— 你刚改过/刚拷进来，但 DSH 还没重新加载。'
+          + '请**完全退出 DSH 再打开**（只刷新页面不够）。在那之前，这里新加的开关点了也不会有反应。') : null,
 
         /* ── 今天 ── */
         h('div', { 'data-bd-row': '' },
