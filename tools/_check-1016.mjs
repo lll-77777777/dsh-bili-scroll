@@ -182,6 +182,21 @@ ok(cli.includes('r.ignored'), 'client.js 没处理宿主回过来的 ignored')
   for (const k of defKeys) ok(cfgKeys.includes(k), `DEFAULTS 里有 ${k}，但 Config 里没有 ⇒ normalize 会把它吃掉`)
 }
 
+// ⑮ 2026-10-17：用真实数据查出来的四处（认领旧评论 / 并账 / @ 判据回到接口事实 / 去重）
+ok(threads.includes('export function parseCommentLink'), 'threads.mjs 没有"从评论链接抠坐标"')
+ok(threads.includes('export async function claimComment'), 'threads.mjs 没有「认领旧评论」')
+ok(threads.includes("verified === 'yes'"), '认领没有"这确实是它自己发的"的核对口径')
+ok(threads.includes('export function mergeSentRecords'), 'threads.mjs 没有"把判重表并进账本"')
+ok(threads.includes('最后一句是我们说的（@ 已接过）'), '「@我」那一路没回到"看接口事实"（回过了会被反复列进名单）')
+ok(threads.includes('同一条对方的话在名单里出现了两次'), '没有"同一条评论挂到两个视频"的去重')
+ok(threads.includes('subject_id'), '「@我」的 oid 候选顺序没修（business_id 在那里是业务类型、不是视频号）')
+ok(!/aid: Number\(pick\(it, \['business_id', 'subject_id'\]\)\)/.test(threads), 'oid 候选还是老的错误顺序（business_id 在前）')
+ok(read('lib/verify.mjs').includes('评论记录'), 'parseSeen 没有限定在「评论记录」那一节（会把看过的视频误认成评论记录）')
+ok(idx.includes("path === '/api/bili-duty/claim'"), '没有 /claim 路由')
+ok(idx.includes("name: 'bili_claim'"), '没有 bili_claim 工具')
+ok(cli.includes('收进账本'), 'client.js 没有「认领旧评论」的入口')
+ok(duty.includes('判重表') , 'duty.md 里判重表相关没写')
+
 console.log(fail.length ? '❌ 有 ' + fail.length + ' 条没过（共 ' + total + ' 条）：' : `✅ 全部 ${total} 条断言通过`)
 for (const f of fail) console.log('   - ' + f)
 process.exit(fail.length ? 1 : 0)

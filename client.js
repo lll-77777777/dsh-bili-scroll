@@ -143,6 +143,7 @@ window.__ModuleLoader__.load({
       const [replyPer, setReplyPer] = React.useState(null)
       const [replyDepth, setReplyDepth] = React.useState(null)   // ⭐ 同一条串最多来回几轮
       const [inbox, setInbox] = React.useState(null)             // ⭐ { waiting, text } —— 谁在等我回话
+      const [claimLink, setClaimLink] = React.useState('')       // ⭐ 认领旧评论：粘贴的评论链接
       const [mention, setMention] = React.useState(null)
       const [login, setLogin] = React.useState(null)
       const [runNote, setRunNote] = React.useState(null)
@@ -236,6 +237,19 @@ window.__ModuleLoader__.load({
             : '（没开「只回我 @ 的那个人」⇒ 名单里可能有别人）'
           setInbox({ waiting: r.waiting, text: r.text })
           say((r.waiting ? `有 ${r.waiting} 个人在等你回话` : '现在没有人在等你回话') + ' ' + who, r.waiting ? 'good' : '')
+        } catch (e) { say(String(e?.message ?? e), 'warn') } finally { setBusy('') }
+      }
+
+      // ⭐ 「认领一条旧评论」：以前发的评论、它账本里没有 ⇒ 那条下面的回复它永远看不到。
+      //    粘一条评论链接（含 BV + #reply 号）就能收进账本（只读核对是不是它自己发的）。
+      const onClaim = async () => {
+        const link = String(claimLink || '').trim()
+        if (!link) { say('先把那条评论的链接粘进来 —— B站 App 里对着那条评论点「复制链接」', 'warn'); return }
+        setBusy('claim')
+        try {
+          const r = await jpost('/claim', { link })
+          if (r && r.ok) { say(`已认领 ${r.bvid}${r.already ? '（本来就在账本里）' : ''}：${r.note}`, r.verified === 'no' ? 'warn' : 'good'); setClaimLink('') }
+          else say((r && r.error) || '认领没成功', 'warn')
         } catch (e) { say(String(e?.message ?? e), 'warn') } finally { setBusy('') }
       }
 
@@ -464,7 +478,18 @@ window.__ModuleLoader__.load({
             h('div', { 'data-bd-row': '' },
               h('button', { 'data-bd-btn': '', 'data-primary': '', disabled: busy === 'chat', onClick: onChat }, '现在回话'),
               h('button', { 'data-bd-btn': '', disabled: busy === 'inbox', onClick: onInbox }, '看谁在等我回话')),
-            inbox ? h('pre', { 'data-bd-pre': '' }, inbox.text || '（没人在等）') : null) : null,
+            inbox ? h('pre', { 'data-bd-pre': '' }, inbox.text || '（没人在等）') : null,
+            h('div', { 'data-bd-label': '' }, '认领一条旧评论（它以前发的、账本里没有的）'),
+            h('div', { 'data-bd-note': '' },
+              '⚠️ 它只认账本里记着的评论 —— **旧版本发出去的评论没进过账本**，所以那下面的回复它一直看不到。'
+              + 'B站 App 里对着**它发的那条评论**点「复制链接」，粘到这里收进账本，之后那条下面有人回话它就会接。'),
+            h('div', { 'data-bd-row': '' },
+              h('input', {
+                'data-bd-input': '', value: claimLink,
+                placeholder: 'https://www.bilibili.com/video/BV...?comment_on=1#reply...',
+                onChange: (e) => setClaimLink(e.target.value),
+              }),
+              h('button', { 'data-bd-btn': '', disabled: busy === 'claim', onClick: onClaim }, '收进账本'))) : null,
           h(ToggleRow, {
             label: '自动评论并 @ 你',
             note: '默认关；开了之后它会在挑中的视频下面留评论，并 @ 你填的那个人',

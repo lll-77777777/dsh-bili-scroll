@@ -30,8 +30,8 @@ import { McpClient } from './lib/mcp.mjs'
 import { verifyRecent, appendVerifyToReport } from './lib/verify.mjs'
 // ⭐ 评论区「来回对话」（2026-10-16）：宿主负责**只读**地算出"谁在等我回话"，
 //    那一轮只负责**说话** —— 让它自己去几百条评论里翻是又贵又不可靠的一条路。
-import { buildInbox, noteReplySent, noteCommentSent } from './lib/threads.mjs'
-import { fetchThread, loadCredential, headersFor } from './lib/bili-api.mjs'
+import { buildInbox, noteReplySent, noteCommentSent, claimComment, parseCommentLink } from './lib/threads.mjs'
+import { fetchThread, loadCredential, headersFor, ourMid } from './lib/bili-api.mjs'
 import { WINDOWS, stateDirOf, readJson, writeJson, ensureHomeFiles, inWindow, dayKey } from './lib/state.mjs'
 import { loginStart, loginPoll, saveCredential, renderQrPng } from './lib/login.mjs'
 import { ensureUv } from './lib/uvfetch.mjs'
@@ -478,6 +478,41 @@ export function apply(ctx, config) {
       const r = await runDuty('manual', 'chat')
       return { ok: true, ...r }
     },
+  })
+
+  /**
+   * ⭐⭐ 「认领一条评论」：把**以前发过、账本里没有**的评论收进账本。
+   *
+   * 为什么要有它（2026-10-17 使用者当场问的）：他截图里那条评论是**旧版本发的** ——
+   * 那时既没有宿主账本、判重表里也没记 ⇒ 宿主不知道"那条评论是我的"
+   * ⇒ **它下面有人回话，永远不会被看到** ✗（"我在他 @ 我的评论区评论，他没有回复我"）。
+   * 在 B站 App 里对着**它发的那条评论**点「复制链接」，把链接粘过来就行 ✓
+   */
+  const claimFromLink = async (link) => {
+    const { bvid, rpid } = parseCommentLink(link)
+    if (!bvid || !rpid) {
+      return { ok: false, error: '这条链接里没找到「BV号 + 评论号」—— 请用 B站 App 里那条评论的「复制链接」' }
+    }
+    const cred = loadCredential(stateDir)
+    if (!cred) return { ok: false, error: '还没扫码登录' }
+    const r = await claimComment(stateDir, {
+      bvid, rpid,
+      headers: headersFor(cred),
+      mine: ourMid(cred),
+      cache: new Map(),
+    })
+    if (r.ok) log(`认领评论：${r.bvid} rpid=${r.rpid}（核对=${r.verified}${r.already ? '，本来就在账本里' : ''}）`)
+    return r
+  }
+
+  tool({
+    name: 'bili_claim',
+    description: '把一条**以前发过、插件账本里没有**的评论收进账本（认领）。收进来之后，'
+      + '有人在那条评论下面回话，它就会接。\n'
+      + '用法：给 B站 App 里那条评论的「复制链接」（含 BV 号 + #reply评论号）。'
+      + '⚠️ 只收**它自己发的**那条（粘贴会只读核对一遍，不是它发的会明确告诉你）。',
+    parameters: { link: { type: 'string', description: '评论链接（形如 https://www.bilibili.com/video/BVxxxx?comment_on=1#reply123456789）' } },
+    async execute(args) { return claimFromLink(String(args.link ?? '')) },
   })
 
   tool({
@@ -1253,6 +1288,12 @@ export function apply(ctx, config) {
         return sendJson(res, 200, { ok: false, blocked: true, hint: '先在上面打开「评论区来回对话」—— 关着的时候它不会替你回话' })
       }
       return sendJson(res, 200, { ok: true, ...(await runDuty('manual', 'chat')) })
+    }
+
+    // ⭐ 「认领一条评论」：把以前发过、账本里没有的评论收进来（那条评论下面有人回话才会被接）
+    if (req.method === 'POST' && path === '/api/bili-duty/claim') {
+      const body = await readBody(req)
+      return sendJson(res, 200, await claimFromLink(String(body?.link ?? '')))
     }
 
     // ⭐ 「谁在等我回话」：只读，把收件箱原样给设置页（含每条要填的 rpid / root）
