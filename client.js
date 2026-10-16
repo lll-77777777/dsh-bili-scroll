@@ -140,6 +140,7 @@ window.__ModuleLoader__.load({
       //    ⇒ 直接绑 cfg 的话，用户打字打到一半就被冲没了 ✗（2026-10-14 陌生人验收时抓到）
       const [perDay, setPerDay] = React.useState(null)
       const [perRound, setPerRound] = React.useState(null)
+      const [perRoundEach, setPerRoundEach] = React.useState(null)   // ⭐ 每轮最多**看**几条（跟上面那个"发几条评论"不是一回事）
       const [replyPer, setReplyPer] = React.useState(null)
       const [replyDepth, setReplyDepth] = React.useState(null)   // ⭐ 同一条串最多来回几轮
       const [inbox, setInbox] = React.useState(null)             // ⭐ { waiting, text } —— 谁在等我回话
@@ -158,6 +159,7 @@ window.__ModuleLoader__.load({
         if (cfg && rl === null) setRl(cfg.reportLevel || 'full')
         if (cfg && perDay === null) setPerDay(String(cfg.perDay ?? 5))
         if (cfg && perRound === null) setPerRound(String(cfg.commentPerRound ?? 1))
+        if (cfg && perRoundEach === null) setPerRoundEach(String(cfg.perRound ?? 2))
         if (cfg && replyPer === null) setReplyPer(String(cfg.replyPerRound ?? 1))
         if (cfg && replyDepth === null) setReplyDepth(String(cfg.replyDepth ?? 5))
         if (cfg && mention === null) setMention(cfg.mentionName || '')
@@ -373,6 +375,13 @@ window.__ModuleLoader__.load({
       }
 
       const sw = (k) => Boolean(cfg[k])
+      // ⭐ 自定义时段那两个时间框：`type="time"` 只吃规整的 `HH:MM` ⇒ 读出来先兜一下格式
+      //    （宿主存的都是校验过的，这里防的是"老配置/别的插件改花了"的情况）
+      const timeOf = (k) => {
+        const m = /^(\d{1,2}):(\d{2})$/.exec(String(cfg[k] ?? '').trim())
+        if (!m) return ''
+        return `${String(Math.min(23, Math.max(0, Number(m[1])))).padStart(2, '0')}:${m[2]}`
+      }
 
       return h('div', { 'data-bd-page': '' },
 
@@ -401,28 +410,68 @@ window.__ModuleLoader__.load({
             on: sw('peakValley'),
             onChange: (v) => patch({ peakValley: v }, '峰谷时段自动刷'),
           }),
+          // ⭐ 2026-10-17：使用者要「保留原本峰谷设定 + 一个能自己填时间的开关」
+          sw('peakValley') ? h(ToggleRow, {
+            label: '自定义时间段',
+            note: '关着用上面那套内置谷时窗口；开着就用你自己填的两个时段（第二个可以跨零点，比如 20:00–01:00）',
+            on: sw('customTime'),
+            onChange: (v) => patch({ customTime: v }, '自定义时间段'),
+          }) : null,
           sw('peakValley') ? h('div', { 'data-bd-sub': '' },
-            ...['noon', 'night'].map((k) => h(ToggleRow, {
-              key: k,
-              label: win[k].label,
-              note: `${win[k].start} – ${win[k].end}`,
-              on: sw(k),
-              onChange: (v) => patch({ [k]: v }, win[k].label),
-            }))) : null),
+            ...['noon', 'night'].map((k) => h('div', { key: k },
+              h(ToggleRow, {
+                label: win[k].label,
+                note: `现在是 ${win[k].start} – ${win[k].end}`,
+                on: sw(k),
+                onChange: (v) => patch({ [k]: v }, win[k].label),
+              }),
+              // 开了自定义 ⇒ 这两个窗口的时间可改（关着就是内置谷时，只读）
+              (sw('customTime') && sw(k)) ? h('div', { 'data-bd-row': '' },
+                h('div', { 'data-bd-grow': '' }, h('div', { 'data-bd-note': '' }, '开始 → 结束')),
+                h('input', {
+                  'data-bd-input': '', 'data-bd-time': '', type: 'time',
+                  value: timeOf(k === 'noon' ? 't1Start' : 't2Start'),
+                  onChange: (e) => patch({ [k === 'noon' ? 't1Start' : 't2Start']: e.target.value }, '时段开始'),
+                }),
+                h('span', { 'data-bd-note': '' }, '→'),
+                h('input', {
+                  'data-bd-input': '', 'data-bd-time': '', type: 'time',
+                  value: timeOf(k === 'noon' ? 't1End' : 't2End'),
+                  onChange: (e) => patch({ [k === 'noon' ? 't1End' : 't2End']: e.target.value }, '时段结束'),
+                })) : null,
+            ))) : null,
+          // ⭐ 额度怎么摊开：一天看几条 → 分几轮、随机排在时段里（不是开窗就一次看完）
+          (sw('peakValley') && sw('noon') || sw('peakValley') && sw('night')) ? h('div', { 'data-bd-note': '' },
+            st.plan
+              ? `⏳ 现在在「${st.plan.label}」里：今天还能看 ${st.leftToday} 条；`
+                + `这一窗排了 ${st.plan.left} 轮还没跑（每轮最多 ${st.plan.perRound} 条）`
+                + (st.plan.nextAt ? `，下一轮 ≈ ${new Date(st.plan.nextAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '')
+              : (st.inWindowNow ? '现在就在时段里，马上会排班' : '现在不在时段里 —— 到点才动')) : null),
 
         /* ── 一轮挑几条 ── */
         h('div', { 'data-bd-sec': '' },
           h('div', { 'data-bd-h': '' }, '一轮挑几条'),
           h('div', { 'data-bd-row': '' },
             h('div', { 'data-bd-grow': '' },
-              h('div', { 'data-bd-label': '' }, '每天最多挑几条'),
-              h('div', { 'data-bd-note': '' }, '填 0 = 不自动刷（还是能手动跑）')),
+              h('div', { 'data-bd-label': '' }, '每天最多看几条'),
+              h('div', { 'data-bd-note': '' }, '填 0 = 不自动刷（还是能手动跑）。⭐ 这个额度会**摊成几轮、随机**排在时段里 —— 不会开窗就一次看完')),
             h('input', {
               'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 0, max: 50,
               value: perDay ?? '',
               onChange: (e) => setPerDay(e.target.value),
-              onBlur: () => { const n = Math.max(0, Math.min(Number(perDay) || 0, 50)); setPerDay(String(n)); patch({ perDay: n }, '每天挑几条') },
+              onBlur: () => { const n = Math.max(0, Math.min(Number(perDay) || 0, 50)); setPerDay(String(n)); patch({ perDay: n }, '每天看几条') },
             })),
+          h('div', { 'data-bd-row': '' },
+            h('div', { 'data-bd-grow': '' },
+              h('div', { 'data-bd-label': '' }, '每轮最多看几条'),
+              h('div', { 'data-bd-note': '' }, '一轮 = 一次会话。默认 2：填 1 更"细水长流"但会话更多（更费），填太大就又变成"一股脑"了')),
+            h('input', {
+              'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 1, max: 10,
+              value: perRoundEach ?? '',
+              onChange: (e) => setPerRoundEach(e.target.value),
+              onBlur: () => { const n = Math.max(1, Math.min(Number(perRoundEach) || 1, 10)); setPerRoundEach(String(n)); patch({ perRound: n }, '每轮看几条') },
+            })),
+          h('div', { 'data-bd-badge': '' }, `今天已看 ${st.ranToday} / ${cfg.perDay} 条 · 还剩 ${st.leftToday}`),
           st.lastRunAt ? h('div', { 'data-bd-note': '' }, `上次跑：${new Date(st.lastRunAt).toLocaleString('zh-CN')}`) : null),
 
         /* ── 发言与转写 ── */

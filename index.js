@@ -32,7 +32,7 @@ import { verifyRecent, appendVerifyToReport } from './lib/verify.mjs'
 //    那一轮只负责**说话** —— 让它自己去几百条评论里翻是又贵又不可靠的一条路。
 import { buildInbox, noteReplySent, noteCommentSent, claimComment, parseCommentLink } from './lib/threads.mjs'
 import { fetchThread, loadCredential, headersFor, ourMid } from './lib/bili-api.mjs'
-import { WINDOWS, stateDirOf, readJson, writeJson, ensureHomeFiles, inWindow, dayKey } from './lib/state.mjs'
+import { WINDOWS, stateDirOf, readJson, writeJson, ensureHomeFiles, inWindow, dayKey, effectiveWindows, windowInstanceAt, planRuns, normTime } from './lib/state.mjs'
 import { loginStart, loginPoll, saveCredential, renderQrPng } from './lib/login.mjs'
 import { ensureUv } from './lib/uvfetch.mjs'
 
@@ -48,20 +48,44 @@ export const inject = ['webServer', 'tools', 'settings']
 // ⚠️ schemastery 彻底拿不到时，这里会是 undefined —— **插件照常加载**，只是设置页降级
 //    （宁可少一个设置页，也不能因为一个 import 让整条插件不激活 ✗）
 export const Config = !z ? undefined : z.object({
-  /** 定量刷：每天最多挑几条 */
+  /** 定量刷：**每天最多挑几条**（真的会被算数执行 —— 见 tick 里的额度） */
   perDay: z.natural().default(5).extra('volatile', true),
+  /**
+   * ⭐ **每轮最多看几条**（2026-10-17 使用者要的"别在时间段里一股脑看完"）。
+   *    每天的额度会**摊成若干轮**、**随机**排在时间段的各个点上（见 `planRuns`）。
+   *    默认 2：1 条太费会话（每轮都是一次完整会话），太大就又成"一股脑"了。
+   */
+  perRound: z.natural().default(2).extra('volatile', true),
   /** 峰谷自动刷（总开关） */
   peakValley: z.boolean().default(false).extra('volatile', true),
-  /** 峰谷子开关：中午 / 晚上 */
+  /** 峰谷子开关：中午 / 晚上（自定义时间时 = 时段一 / 时段二） */
   noon: z.boolean().default(true).extra('volatile', true),
   night: z.boolean().default(true).extra('volatile', true),
+  /**
+   * ⭐ **自定义时间段**（2026-10-17 使用者：「保留原本峰谷自动刷的设定，加个可以自定义时间的开关就行了」）。
+   *    **关着**（默认）= 用内置那两个谷时窗口（中午 12–14 / 晚上 18–次日 9），跟以前一字不差；
+   *    **开着** = 用下面两个时段，开始/结束都按你填的来（时段二可以跨零点，比如 20:00–01:00）✓
+   */
+  customTime: z.boolean().default(false).extra('volatile', true),
+  /** 自定义时段一（默认 = 内置的中午谷时） */
+  t1Start: z.string().default('12:00').extra('volatile', true),
+  t1End: z.string().default('14:00').extra('volatile', true),
+  /** 自定义时段二（默认 = 内置的晚上谷时；允许跨零点） */
+  t2Start: z.string().default('18:00').extra('volatile', true),
+  t2End: z.string().default('09:00').extra('volatile', true),
   /** 自动评论 @ 使用者（默认关 —— 会拿用户的号说话，必须他自己开） */
   autoComment: z.boolean().default(false).extra('volatile', true),
   /** 本地转写（没字幕的视频用 Whisper 转；默认关，要下模型） */
   transcribe: z.boolean().default(false).extra('volatile', true),
   /** 本地转写用哪个 Whisper 模型（tiny / base / small / medium） */
   asrModel: z.string().default('small').extra('volatile', true),
-  /** ⭐ 每轮最多发几条评论（每条里 @ 一次下面那个人） */
+  /**
+   * ⭐ **最多 @ 我几条**（每条评论里 @ 一次）。
+   *    🔴 2026-10-17 使用者把它**重新定成"上限"**：「可以设置为至多，而不是我设置了那么多条，
+   *       就一定要全部 @ 我 —— 可以只 @ 我觉得有意思的，比如最多 5 条但其中 2 条没意思就可以不 @」。
+   *    ⇒ 它是**至多**、不是任务：凑数的、平淡的一条都别发。
+   *    一天真正的总上限还受「每天最多看几条」约束（同一视频只评论一次 ⇒ @ 条数 ≤ 看过的条数）。
+   */
   commentPerRound: z.natural().default(1).extra('volatile', true),
   /** ⭐ 要 @ 谁（B站 昵称）；**留空 = 不发评论** —— 评论存在的意义就是 @ 那一下 */
   mentionName: z.string().default('').extra('volatile', true),
@@ -193,7 +217,9 @@ export function apply(ctx, config) {
    *     ② **定时器回调里绝不让异常外冒**（见 tick）—— 未捕获异常会杀掉整个宿主进程。
    */
   const DEFAULTS = {
-    perDay: 5, peakValley: false, noon: true, night: true, autoComment: false, transcribe: false, asrModel: 'small',
+    perDay: 5, perRound: 2, peakValley: false, noon: true, night: true,
+    customTime: false, t1Start: '12:00', t1End: '14:00', t2Start: '18:00', t2End: '09:00',
+    autoComment: false, transcribe: false, asrModel: 'small',
     keywords: [], commentPerRound: 1, mentionName: '', pythonPath: 'python', dshBin: '', headlessProfile: 'headless', overlayMcp: true, workspace: '', reportLevel: 'full', replyToComments: false, replyPerRound: 1, replyDepth: 5, replyOnlyMention: true, replyToMentions: true,
   }
   const normalize = (src, base) => {
@@ -550,9 +576,11 @@ export function apply(ctx, config) {
         today: dayKey(now),
         ranToday: st.day === dayKey(now) ? Number(st.count || 0) : 0,
         perDay: cfg.perDay,
-        windows: Object.fromEntries(Object.entries(WINDOWS).map(([k, w]) => [k, {
+        // ⚠️ 原来是写死那两个内置谷时窗口（`WINDOWS`）—— 使用者开了「自定义时间段」时，
+        //    这里报的就得是**实际生效**的那两个，不然它会按错的时间去等 ✗（2026-10-17 改）
+        windows: Object.fromEntries(effectiveWindows(cfg).map((w) => [w.name, {
           label: w.label, start: w.start, end: w.end,
-          switchOn: Boolean(cfg[k]),
+          switchOn: Boolean(cfg[w.name]),
           opening: inWindow(now, w),
         }])),
         peakValley: cfg.peakValley,
@@ -618,21 +646,32 @@ export function apply(ctx, config) {
   tool({
     name: 'bili_config',
     description: '读 / 改「刷B站」的设置。不给 `patch` 就是读；给了就改（只认 schema 里的字段）。\n'
-      + '例：`{"perDay":5,"peakValley":true,"noon":true,"night":true,"autoComment":false,"transcribe":false,"keywords":["DeepSeek Harness"]}`',
+      + '例：`{"perDay":5,"perRound":2,"peakValley":true,"customTime":false,"t2Start":"19:00","t2End":"22:00",'
+      + '"autoComment":false,"commentPerRound":5,"transcribe":false,"keywords":["DeepSeek Harness"]}`\n'
+      + '说明：「每天最多看几条」的额度会**摊成几轮、随机**排在峰谷时间段里（`perRound` = 每轮最多看几条）；'
+      + '`customTime:true` 时用 `t1Start/t1End/t2Start/t2End` 这四个时间（可跨零点）；'
+      + '`commentPerRound` 是**最多 @ 使用者几条**（至多，不是必须凑够）。',
     parameters: { patch: { type: 'object', additionalProperties: true, description: '要改的字段（可省）' } },
     async execute(args) {
       if (args?.patch && typeof args.patch === 'object' && !Array.isArray(args.patch)) saveCfg(args.patch)
-      return { ok: true, config: cfg, windows: WINDOWS, home: stateDir, venvReady: venvReadyNow() }
+      return {
+        ok: true, config: cfg, home: stateDir, venvReady: venvReadyNow(),
+        windows: Object.fromEntries(effectiveWindows(cfg).map((w) => [w.name, { label: w.label, start: w.start, end: w.end, on: w.on }])),
+      }
     },
   })
 
   /* ─────────────── 跑一轮（跟老方案同一条路：dsh --profile headless <prompt>） ─────────────── */
 
   const dutyStateFile = join(stateDir, 'state.json')
-  const bumpState = (patch) => {
+  /**
+   * 原样落盘（排班/额度那种"当天之内"的状态用它）。
+   * ⚠️ 故意**不做**"换天重置"：跨零点的窗口实例算在它开始那天头上，
+   *    0 点过后那一跳如果把排班清掉，就又变成"过 0 点重新排一轮"了 ✗
+   *    （换天重置改由 tick 里的 `plans` 键自带日期前缀 + 只留今昨两天来完成）
+   */
+  const saveState = (patch) => {
     const st = readJson(dutyStateFile, {})
-    const today = dayKey()
-    if (st.day !== today) { st.day = today; st.count = 0; st.windows = {} }
     writeJson(dutyStateFile, { ...st, ...patch })
     return st
   }
@@ -709,6 +748,16 @@ export function apply(ctx, config) {
        *    否则会出现"插件说谁都没回、MCP 那边却放过了本人"这种自相矛盾的状态 ✗
        */
       const ownerMid = name ? (Number(readJson(join(stateDir, 'conversation.json'), {})?.owner?.mid) || 0) : 0
+      /**
+       * ⭐ 发新的顶层评论 = **"@ 我"那一下** ⇒ 它同时受「今天最多看几条」约束：
+       *    今天的额度用完了（或 `perDay=0`）⇒ **一个都不许再 @** ✓
+       *    （同一个视频只评论一次 + 每天只看 N 条 ⇒ @ 的条数天然不会超过 N，跟使用者那句
+       *      "最多 @ 我 5 条"对得上 ✓）
+       */
+      const st = readJson(dutyStateFile, {})
+      const today = dayKey()
+      const used = st.day === today ? Number(st.count || 0) : 0
+      const leftToday = Math.max(0, (Number(cfg.perDay) || 0) - used)
       const allow = (r?.items || [])
         .map((it) => ({ bv: it.bv, rpid: Number(it.from?.rpid) || 0, root: Number(it.root) || 0, by: it.via || 'thread' }))
         .filter((x) => x.rpid)
@@ -716,14 +765,16 @@ export function apply(ctx, config) {
         enabled,
         owner: { mid: ownerMid, name },
         allow,
-        // 发新的顶层评论（不是回话）算不算"拿使用者的号 @ 人" ⇒ 跟「自动评论并 @ 你」同一个口径
-        allowNewComment: Boolean(cfg.autoComment) && Boolean(name),
+        // 发新的顶层评论（不是回话）算不算"拿使用者的号 @ 人" ⇒ 跟「自动评论并 @ 你」同一个口径，
+        // 外加"今天还有额度"（额度用完了就别再 @ 了 —— 见上面 leftToday）
+        allowNewComment: Boolean(cfg.autoComment) && Boolean(name) && leftToday > 0,
         at: new Date().toISOString(),
         note: '由 dsh-bili-scroll 写；给内置 MCP 的「只回本人」闸用。allow = 本轮名单里允许回的目标。',
       })
       log(`「只回本人」机器闸：${enabled
         ? `只认 ${name || '（没填昵称 ⇒ 认不出谁，谁都不回）'}${ownerMid ? ` / UID ${ownerMid}` : ' / 还没认下 UID（按昵称认）'}`
-        : '白名单关着（谁都可能被回）'}；本轮放行 ${allow.length} 条；新评论${Boolean(cfg.autoComment) && Boolean(name) ? '可以发' : '不许发'}`)
+        : '白名单关着（谁都可能被回）'}；本轮放行 ${allow.length} 条；`
+        + `新评论${Boolean(cfg.autoComment) && Boolean(name) && leftToday > 0 ? `可以发（今天还剩 ${leftToday} 条额度）` : `不许发（${leftToday > 0 ? '开关关着 / 没填要 @ 谁' : '今天的额度用完了'}）`}`)
     } catch (e) { log(`写 reply-policy.json 失败（这一轮 MCP 那边就没有闸了）：${e?.message ?? e}`) }
   }
 
@@ -782,7 +833,15 @@ export function apply(ctx, config) {
       + `别自己去几百条评论里翻（翻不全，还费钱）。回完把「BV + 对方那条 rpid + root + 时间 + 你回的正文前 20 字」记进判重表的评论记录。`
   }
 
-  const promptFor = (mode = 'duty', inbox = null) => {
+  /**
+   * @param {'duty'|'chat'} mode
+   * @param {object|null} inbox
+   * @param {{roundQuota?:number, leftToday?:number}} opts
+   *   ⭐ 额度是**宿主算好**再交给它的（"这一轮最多看几条 / 今天还剩几条"）——
+   *   别让它自己记"今天看了几条"：它每轮都是全新的会话，记不住，
+   *   结果就是每轮都以为"今天还有 5 条的额度"⇒ 一天看 5×轮数条（2026-10-17 改之前就是这样）。
+   */
+  const promptFor = (mode = 'duty', inbox = null, opts = {}) => {
     // ⭐ 章程取哪一份：**插件里那份（永远跟版本一致）**；但家里那份如果**比它新**，说明使用者自己改过 ⇒ 听使用者的。
     const shipped = join(pluginDir, 'prompts', 'duty.md')
     const homeCopy = join(stateDir, 'duty.md')
@@ -850,7 +909,12 @@ export function apply(ctx, config) {
         : cfg.reportLevel === 'off'
           ? `这一轮不要写日报文件，也别生成任何报告；只有真发了评论就一句话记下。`
           : `把报告写到 ${join(outDir, `${dayKey()}.md`)}。`)
-      + `今天最多挑 ${cfg.perDay} 条；关键词${kws.length ? `用这些：${kws.join('、')}` : '用章程里的默认那几组'}。`
+      + (opts.roundQuota
+        ? `⭐ **这一轮最多挑 ${opts.roundQuota} 条** —— 今天的额度（${cfg.perDay} 条）是**摊成好几轮**的，`
+          + `剩下的会按宿主排的时间点在后面几轮里看，**别一轮就把今天看完** ✗。`
+          + `（宿主算的：今天还剩约 ${Math.max(0, Number(opts.leftToday ?? 0))} 条没看）`
+        : `今天最多挑 ${cfg.perDay} 条`)
+      + `；关键词${kws.length ? `用这些：${kws.join('、')}` : '用章程里的默认那几组'}。`
       + `本地转写：${cfg.transcribe
         ? (asrReadyNow()
           ? '开着，而且装好了（没字幕的视频用家里那份 asr.py 转，命令见章程）'
@@ -860,7 +924,11 @@ export function apply(ctx, config) {
       + `判重表 = ${join(stateDir, 'seen.md')}（**就是这个绝对路径**，别写到家目录 ~、也别写到别处）；`
       + `⚠️ 它读不出来或写不进去，**必须在报告里明说** —— 那一轮宁可不发评论，也别当成"没有记录"重发一遍。`
       + `自动评论并 @ ${cfg.mentionName || '（还没填要 @ 谁）'} 是${cfg.autoComment && cfg.mentionName
-        ? `开着的（每轮最多 ${cfg.commentPerRound} 条评论，每条在正文里纯文本 @ ${cfg.mentionName}，150 字内）`
+        ? `开着的 —— 每条在正文里纯文本 @ ${cfg.mentionName}、150 字内。`
+          + `🔴 **至多 ${cfg.commentPerRound} 条，这是上限不是任务**：`
+          + `只有**真觉得有意思、且值得占用他一次注意力**的才 @；`
+          + `凑数的、平淡的、可有可无的 —— **一条都别 @** ✓`
+          + `（使用者 2026-10-17 原话：「最多 @ 我 5 条，但其中 2 条没什么意思就可以不 @ 我」）`
         : '关着的（只写报告，别发评论）'}。`
       + replyVoiceLine()
       + `最后用一句话汇报你挑到了什么。现在几点了自己看一眼系统时间。`
@@ -949,10 +1017,11 @@ export function apply(ctx, config) {
   /**
    * @param {string} why  为什么跑（window:noon / manual / …，只用于日志）
    * @param {'duty'|'chat'} mode  duty = 搜视频刷一轮；chat = **只回评论区**（不搜视频、不写日报）
+   * @param {{roundQuota?:number, leftToday?:number}} opts 额度（由 tick 算好传进来，见 promptFor）
    * ⚠️ 这是个 `async` 函数，但**永远不 reject**（调用方大多是"没人接"的地方）：
    *    tick / 工具 / HTTP 三处调用都必须拿得到返回值，绝不能让异常升级成未捕获异常 ⇒ 杀掉宿主。
    */
-  const runDuty = async (why = 'window', mode = 'duty') => {
+  const runDuty = async (why = 'window', mode = 'duty', opts = {}) => {
    try {
     // ⭐ 先把「谁在等你回话」拉好再起会话：那一轮被沙箱关着、也不该自己去翻几百条评论。
     //    拉失败**不拦着跑轮**（跑轮本身还有搜视频那摊活），只在日志里留一句。
@@ -976,14 +1045,14 @@ export function apply(ctx, config) {
     const overlay = ensureOverlay()
     const args = [...dsh.args, '--profile', cfg.headlessProfile || 'headless']
     if (overlay) args.push('--patch', overlay)
-    args.push(promptFor(mode, inbox))
+    args.push(promptFor(mode, inbox, opts))
     // ⭐ 这一轮的工作目录 = 使用者（或别的用户）的**工作区** —— 只有这样它的 `AGENTS.md` 才会自动加载。
     // ⭐ 工作目录 = **插件家**：那一轮**被沙箱关着**，只写得了自己工作目录里的东西 ✗
     //    （2026-10-14 教训：为了让它读工作区里的 AGENTS.md 把 cwd 改成工作区 ⇒
     //      它写不了家目录里的 out/ 报告、整轮卡在"我是被沙箱关着的"上面打转 ✗；
     //      现在改成"设定由插件读进来、内联进提示词" ✓，cwd 回到插件家 ✓）
     const cwd = stateDir
-    log(`${mode === 'chat' ? '评论区回话' : '刷B站'}开跑（${why}）：${dsh.command} ${args.slice(0, 3).join(' ')} …  cwd=${cwd}`)
+    log(`${mode === 'chat' ? '评论区回话' : '刷B站'}开跑（${why}${opts.roundQuota ? `，这一轮最多看 ${opts.roundQuota} 条、今天还剩 ${opts.leftToday}` : ''}）：${dsh.command} ${args.slice(0, 3).join(' ')} …  cwd=${cwd}`)
     const child = spawn(dsh.command, args, {
       cwd,
       shell: dsh.shell,
@@ -1017,26 +1086,90 @@ export function apply(ctx, config) {
    *    第一版是 `setInterval(tick, 60_000)`，回调里抛的 TypeError **没人接**，直接把整个宿主进程带走
    *    （`dsh: fatal uncaught exception`）。⇒ **定时器回调必须自己兜住所有异常**：
    *    插件再错也只该"这一轮没跑成"，绝不该杀宿主。
+   *
+   * ⭐⭐ 2026-10-17 重写（使用者当场反馈：「希望他是在我设置的时间段，浏览我设置的浏览数量，
+   *    而不是过了 0 点一股脑的浏览完」）。他 `state.json` 里的证据：
+   *      `windows: { "2026-10-16:night": true, "2026-10-17:night": true }` ← 过了 0 点又当成新的一轮
+   *      `count: 0`（每天几条**从来没被算过**）；00:01 那一轮把当天的额度一次看完了。
+   *    ⇒ 四处一起改：
+   *      ① 窗口按**它开始的那天**算实例（`windowInstanceAt`）⇒ 过了 0 点不再重开一轮 ✓
+   *      ② 排班账本**不按今天过滤**（跨零点实例在 00:30 时 st.day 还是昨天，一过滤就丢）✓
+   *      ③ 每天额度**真的算数**：分摊到各窗口、每轮最多 `perRound` 条 ✓
+   *      ④ 一轮的时间**随机**排在窗口里（`planRuns`）⇒ 不再"开窗就一股脑" ✓
+   *    口径：**窗口实例**的额度在排班时就切好（跨零点也认它），**当天**的额度只约束当天新开的窗
+   *    （手动跑过的也占）—— 这样"昨晚开到今早"的尾轮不会被今天归零的 count 毙掉，
+   *    而"每天最多看几条"在每个自然日都还是硬顶。
    */
+  const clampInt = (v, lo, hi, dflt) => Math.max(lo, Math.min(hi, Number(v) || dflt))
+
+  /** 今天还剩几条额度 + 本窗口该分到几条 */
+  const budgetNow = (st, now, wins) => {
+    const today = dayKey(now)
+    const used = st.day === today ? Number(st.count || 0) : 0
+    const perDay = Math.max(0, Number(cfg.perDay) || 0)
+    const left = Math.max(0, perDay - used)
+    // 分给这个窗口的份额：按"同时开着的窗口数"平分今天的额度（两个窗口都开 ⇒ 中午看一半、晚上看一半）
+    const share = Math.ceil(perDay / Math.max(1, wins.length))
+    return { today, used, perDay, left, share, perRound: clampInt(cfg.perRound, 1, 10, 2) }
+  }
+
   const tick = () => {
     try {
       if (!cfg.peakValley) return
       const now = new Date()
+      const wins = effectiveWindows(cfg).filter((w) => w.on)
+      if (!wins.length) return
+      const hit = wins.map((w) => ({ w, i: windowInstanceAt(now, w, w.name) })).find((x) => x.i)
+      if (!hit) return                                   // 不在任何时间段里 ⇒ 什么都不做
       const st = readJson(dutyStateFile, {})
-      const today = dayKey(now)
-      const count = st.day === today ? Number(st.count || 0) : 0
-      if (count >= Number(cfg.perDay || 0)) return
-      for (const k of ['noon', 'night']) {
-        if (!cfg[k]) continue
-        if (!inWindow(now, WINDOWS[k])) continue
-        const key = `${today}:${k}`
-        if (st.windows?.[key]) continue
-        bumpState({ windows: { ...(st.windows || {}), [key]: true }, lastRunAt: now.toISOString(), lastWhy: k })
-        // ⚠️ runDuty 现在是 async：拿得住它的 promise，`.catch` 再兜一道 ——
-        //    这一跳里的未捕获 reject 和未捕获异常一样会杀掉宿主（0.1.0 那次事故就是这个形状）。
-        Promise.resolve(runDuty(`window:${k}`)).catch((e) => log(`这一轮起不来（已兜住）：${e?.message ?? e}`))
-        return
+      const b = budgetNow(st, now, wins)
+
+      // ── 排班账本：只留"今天 + 昨天"两天的 ──
+      //    🔴 不能按 `st.day === 今天` 过滤（第一版就是这么写的，又踩回同一个坑）：
+      //       跨零点的窗口实例算在**它开始那天**头上 ⇒ 00:30 时 st.day 还是昨天，
+      //       一过滤就把在飞的那个排班丢了 ⇒ 当场重排一轮 ⇒ 正是使用者骂的"过 0 点一股脑" ✗
+      //       "昨天"必须留着：那个跨零点实例（昨晚 18:00 开到今早 9:00）在 00:30 还要用它。
+      //       更早的键在这一步清掉（不然 state.json 每天长 2 条，永远不瘦）。
+      const yst = dayKey(new Date(now.getTime() - 864e5))
+      const plans = Object.fromEntries(
+        Object.entries(st.plans && typeof st.plans === 'object' ? st.plans : {})
+          .filter(([k]) => String(k).slice(0, 10) >= yst))
+      let plan = plans[hit.i.key]
+      if (!plan || !Array.isArray(plan.at)) {
+        if (!b.left) return                              // 没排过班 + 今天没额度 ⇒ 这一窗不看了
+        const quota = Math.min(b.left, b.share)
+        const runs = Math.max(1, Math.ceil(quota / b.perRound))
+        const at = planRuns(Math.max(now.getTime(), hit.i.startAt), hit.i.endAt, runs)
+        plan = { at, quota, perRound: b.perRound, done: 0, made: now.toISOString() }
+        saveState({ plans: { ...plans, [hit.i.key]: plan }, lastPlanAt: now.toISOString() })
+        log(`排班（${hit.w.label} ${hit.w.start}–${hit.w.end}）：这一窗看 ${quota} 条、分 ${at.length} 轮，`
+          + `时间点 = ${at.map((t) => new Date(t).toTimeString().slice(0, 5)).join(' / ')}`)
       }
+      const next = Array.isArray(plan.at) ? plan.at[0] : 0
+      if (!next || now.getTime() < next) return          // 还没到点 ⇒ 等下一跳
+      // ── 到点了：算这一轮能看几条 ──
+      const perRound = plan.perRound || b.perRound
+      // 这个窗口实例自己的剩余额度（排班时切好的那部分，跨零点也认它 —— 别重开一轮）
+      let remain = Math.max(0, (plan.quota || 0) - (plan.done || 0) * perRound)
+      // 当天开的窗口还要受"今天还剩几条"管（手动跑过的也占额度 ——「每天最多看几条」是硬顶）；
+      //   🔴 跨零点那种"昨晚开到今早"的实例**不受今天额度管**：它的额度是昨晚那笔，
+      //      今天早上刚归零的 count 不该把昨晚排好的轮次毙掉 ✗
+      if (hit.i.day === b.today) remain = Math.min(remain, b.left)
+      if (remain <= 0) return                            // 没额度了 ⇒ 时间点先留着（不烧掉），下跳再看
+      // **额度按"这一轮最多看几条"先扣** —— 崩了也算用掉，别重复看
+      const take = Math.max(1, Math.min(perRound, remain))
+      const leftToday = Math.max(0, b.left - take)
+      const nextPlan = { ...plan, at: plan.at.slice(1), done: (plan.done || 0) + 1 }
+      saveState({
+        day: b.today, count: b.used + take,
+        plans: { ...plans, [hit.i.key]: nextPlan },
+        lastRunAt: now.toISOString(), lastWhy: `window:${hit.w.name}`,
+        lastRoundQuota: take, lastRoundLeft: leftToday,
+      })
+      // ⚠️ runDuty 现在是 async：拿得住它的 promise，`.catch` 再兜一道 ——
+      //    这一跳里的未捕获 reject 和未捕获异常一样会杀掉宿主（0.1.0 那次事故就是这个形状）。
+      Promise.resolve(runDuty(`window:${hit.w.name}`, 'duty', { roundQuota: take, leftToday }))
+        .catch((e) => log(`这一轮起不来（已兜住）：${e?.message ?? e}`))
     } catch (e) {
       log(`定时器这一跳出错（已兜住，不影响宿主）：${e?.stack ?? e}`)
     }
@@ -1279,13 +1412,29 @@ export function apply(ctx, config) {
   const status = () => {
     const st = readJson(dutyStateFile, {})
     const today = dayKey()
+    const now = new Date()
+    const wins = effectiveWindows(cfg)
+    const winsOn = wins.filter((w) => w.on)
+    // ⭐ 排班/额度：设置页要能回答"今天看了几条、还剩几条、下一轮什么时候"（2026-10-17 加的）
+    const hit = winsOn.map((w) => ({ w, i: windowInstanceAt(now, w, w.name) })).find((x) => x.i)
+    const plan = hit ? (st.plans?.[hit.i.key] || null) : null
+    const used = st.day === today ? Number(st.count || 0) : 0
     return {
       ok: true,
       home: stateDir,
       config: cfg,
-      windows: WINDOWS,
+      // ⚠️ 原来是写死那两个窗口；自定义时间段开着时得让设置页看到**实际生效**的那两个 ✓
+      windows: Object.fromEntries(wins.map((w) => [w.name, { label: w.label, start: w.start, end: w.end, on: w.on }])),
       today,
-      ranToday: st.day === today ? Number(st.count || 0) : 0,
+      ranToday: used,
+      leftToday: Math.max(0, (Number(cfg.perDay) || 0) - used),
+      inWindowNow: hit ? hit.w.name : '',
+      plan: plan ? {
+        window: hit.w.name, label: hit.w.label,
+        quota: plan.quota, perRound: plan.perRound, done: plan.done || 0,
+        left: (plan.at || []).length, nextAt: (plan.at || [])[0] || null,
+        at: (plan.at || []).map((t) => new Date(t).toISOString()),
+      } : null,
       lastRunAt: st.lastRunAt || null,
       lastWhy: st.lastWhy || null,
       loggedIn: hasCredential(),
@@ -1319,7 +1468,9 @@ export function apply(ctx, config) {
     if (req.method === 'GET' && path === '/api/bili-duty/status') return sendJson(res, 200, status())
 
     if (req.method === 'GET' && path === '/api/bili-duty/config') {
-      return sendJson(res, 200, { ok: true, config: cfg, windows: WINDOWS, home: stateDir })
+      return sendJson(res, 200, { ok: true, config: cfg, home: stateDir, windows: Object.fromEntries(
+        effectiveWindows(cfg).map((w) => [w.name, { label: w.label, start: w.start, end: w.end, on: w.on }]),
+      ) })
     }
 
     if (req.method === 'POST' && path === '/api/bili-duty/config') {
@@ -1338,6 +1489,22 @@ export function apply(ctx, config) {
         else ignored.push(k)
       }
       if ('perDay' in patch) patch.perDay = Math.max(0, Math.min(Number(patch.perDay) || 0, 50))
+      // ⭐ 每轮看几条：1～10（填入非数字/0 都退回 1 —— 它决定"一轮烧多少钱"，别让它变成 0 或 999）
+      if ('perRound' in patch) patch.perRound = Math.max(1, Math.min(Number(patch.perRound) || 1, 10))
+      // ⭐ 最多 @ 我几条：**至多**（不是任务）⇒ 夹在 0～20。0 = 一条都不 @（只写报告）
+      if ('commentPerRound' in patch) patch.commentPerRound = Math.max(0, Math.min(Number(patch.commentPerRound) || 0, 20))
+      if ('customTime' in patch) patch.customTime = Boolean(patch.customTime)
+      if ('noon' in patch) patch.noon = Boolean(patch.noon)
+      if ('night' in patch) patch.night = Boolean(patch.night)
+      // ⭐ 时间必须是 `HH:MM`（填了乱七八糟的东西就退回默认值，别让排班算出一堆 NaN）
+      //    —— 校验函数跟 lib/state.mjs 共用一份（原来两处各写一个不校验范围的正则，`25:99` 都能过 ✗）
+      for (const [k, dflt] of [['t1Start', '12:00'], ['t1End', '14:00'], ['t2Start', '18:00'], ['t2End', '09:00']]) {
+        if (k in patch) patch[k] = normTime(patch[k], dflt)
+      }
+      // ⭐ 改了时间/开关 ⇒ 旧排班作废（不然新时段里还挂着旧时段排出来的时间点）
+      const touchSchedule = ['customTime', 't1Start', 't1End', 't2Start', 't2End', 'noon', 'night', 'perDay', 'perRound']
+        .some((k) => k in patch)
+      if (touchSchedule) { try { saveState({ plans: {}, windows: {} }) } catch (e) { log(`清旧排班失败：${e?.message ?? e}`) } }
       if ('reportLevel' in patch) patch.reportLevel = ['full', 'brief', 'off'].includes(String(patch.reportLevel)) ? String(patch.reportLevel) : 'full'
       if ('replyToComments' in patch) patch.replyToComments = Boolean(patch.replyToComments)
       if ('replyOnlyMention' in patch) patch.replyOnlyMention = Boolean(patch.replyOnlyMention)

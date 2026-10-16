@@ -5,6 +5,8 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// ⭐ 第 ⑱ 节要**真跑**这几个纯函数（排班算错了，文本断言一条都拦不住）
+import { WINDOWS, inWindow, effectiveWindows, windowInstanceAt, planRuns, normTime, MIN_GAP_MS } from '../lib/state.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (rel) => readFileSync(join(ROOT, rel), 'utf8')
@@ -229,6 +231,114 @@ ok(idx.includes('BILI_DUTY_HOME: stateDir'), '宿主的 MCP 环境里没带 BILI
 ok(duty.includes('机器闸'), 'duty.md 没告诉它"发出去那一下还有一道闸"')
 ok(duty.includes('别去试'), 'duty.md 没写"别去试"（不然白花一次调用）')
 ok(cli.includes('发出去那一下还会'), 'client.js 的设置页没说明这道闸在哪一层')
+
+// ⑱ 2026-10-17：「在我设置的时间段里、按我设置的数量看，别过 0 点一股脑刷完」
+//    🔴 这一节**真跑** lib/state.mjs 的纯函数 —— 排班算错（时间挤一堆 / 跨零点重开一轮）
+//       是这次需求的核心，靠"文件里有没有某字符串"断言根本拦不住 ✗
+{
+  const at = (h, m, d = 16) => new Date(2026, 9, d, h, m)          // 2026-10-16（月份 9 = 十月）
+  const night = WINDOWS.night                                       // 18:00–09:00（跨零点）
+  const noon = WINDOWS.noon                                         // 12:00–14:00
+
+  // ── windowInstanceAt：窗口实例按"它开始的那天"算 ──
+  const a = windowInstanceAt(at(20, 0), night, 'night')
+  ok(a && a.key === '2026-10-16:night' && a.day === '2026-10-16', '20:00 的实例应该算在今天头上')
+  ok(a && a.startAt === new Date(2026, 9, 16, 18, 0).getTime(), '晚上实例的 startAt 应该是当天 18:00')
+  ok(a && a.endAt === new Date(2026, 9, 17, 9, 0).getTime(), '跨零点实例的 endAt 应该是次日 9:00')
+  // 🔴🔴 这次需求的心脏：过了 0 点还算**昨晚开的那一次**，绝不新开一轮
+  const b = windowInstanceAt(at(0, 30, 17), night, 'night')
+  ok(b && b.key === '2026-10-16:night', `00:30 的实例必须是昨晚那个 2026-10-16:night（实际 ${b && b.key}）—— 这就是"过 0 点一股脑"的根`)
+  ok(b && b.startAt === new Date(2026, 9, 16, 18, 0).getTime(), '00:30 时实例的 startAt 还应该是昨晚 18:00')
+  ok(windowInstanceAt(at(8, 59, 17), night, 'night')?.key === '2026-10-16:night', '08:59 还在昨晚那个实例里')
+  ok(windowInstanceAt(at(9, 0, 17), night, 'night') === null, '09:00 是结束时刻（不含）⇒ 应该不在任何实例里')
+  ok(windowInstanceAt(at(17, 59), night, 'night') === null, '17:59 还没开窗')
+  ok(windowInstanceAt(at(12, 30), noon, 'noon')?.key === '2026-10-16:noon', '中午窗口实例算在今天')
+  ok(windowInstanceAt(at(3, 0), noon, 'noon') === null, '凌晨不在中午窗口里')
+  ok(windowInstanceAt(at(12, 0), { start: 'abc', end: 'def' }, 'x') === null, '时间格式坏了要返回 null（不能算出 NaN 排班）')
+  ok(inWindow(at(0, 30, 17), night) === true, 'inWindow 也要认跨零点')
+
+  // ── planRuns：随机、但摊得开（不挤成一堆）──
+  const from = 1_800_000_000_000, to = from + 6 * 3600_000          // 6 小时的窗口
+  const ps = planRuns(from, to, 3, () => 0.5)
+  ok(ps.length === 3, `6 小时排 3 轮应该有 3 个时间点（实际 ${ps.length}）`)
+  ok(ps.every((t) => t >= from && t <= to), '有时间点排到窗口外面去了')
+  ok(ps[0] < ps[1] && ps[1] < ps[2], '时间点不是升序')
+  // 🔴 "一股脑"那条：3 轮必须落在 3 个不同的格子里 —— 全挤在开头就等于没改
+  {
+    const slot = (to - from) / 3
+    ok(ps.every((t, i) => Math.floor((t - from) / slot) === i), '有几轮挤到同一段时间里了（又成"一股脑"）')
+  }
+  ok(planRuns(from, to, 3, () => 0).every((t, i) => Math.abs(t - (from + i * ((to - from) / 3) + ((to - from) / 3) * 0.08)) <= 1), 'rand=0 时每轮该落在本格开头（8% 边）')
+  ok(planRuns(from, to, 3, () => 1).every((t, i) => Math.abs(t - (from + (i + 1) * ((to - from) / 3) - ((to - from) / 3) * 0.08)) <= 1), 'rand=1 时每轮该落在本格结尾（8% 边）')
+  // 时间不够 ⇒ 自动减轮（至少 1 轮），绝不硬排
+  ok(planRuns(from, from + 1000, 5).length === 1, '窗口只剩 1 秒也应该保 1 轮')
+  ok(planRuns(from, from + 60_000, 5).length === 1, '1 分钟不够 2 轮（两轮至少隔 5 分钟）')
+  ok(planRuns(from, from + 11 * 60_000, 5).length === 2, '11 分钟最多排 2 轮（两轮至少隔 5 分钟）')
+  ok(planRuns(from, from + 55 * 60_000, 5).length === 5, '55 分钟够排满 5 轮')
+  ok(planRuns(from, from, 3).length === 0, '窗口长度 0 时不该排')
+  ok(planRuns(from, from - 1000, 3).length === 0, '结束早于开始不该排')
+  ok(planRuns(from, to, 0).length === 0, '排 0 轮就是空')
+  ok(JSON.stringify(planRuns(from, to, 2, () => 0.3)) === JSON.stringify(planRuns(from, to, 2, () => 0.3)), '随机源可注入 ⇒ 同源同结果（测试才复现得了）')
+
+  // ── normTime：只此一份的时间校验（不校验范围的那种正则会放过 25:99）──
+  ok(normTime('9:30', '12:00') === '9:30', 'normTime 应该认 H:MM')
+  ok(normTime('23:59', '12:00') === '23:59', 'normTime 应该认 23:59')
+  ok(normTime('24:00', '12:00') === '12:00', 'normTime 不该认 24:00（没有这个点）')
+  ok(normTime('25:99', '12:00') === '12:00', 'normTime 不该认 25:99（老正则连这个都放过 ⇒ 排出 26:39 的幽灵时段）')
+  ok(normTime('12:60', '12:00') === '12:00', 'normTime 不该认 12:60')
+  ok(normTime('abc', '09:00') === '09:00', 'normTime 对乱值退默认')
+  ok(normTime('', '09:00') === '09:00', 'normTime 对空值退默认')
+
+  // ── effectiveWindows：自定义关着 = 内置谷时；开着 = 按填的来 ──
+  const off = effectiveWindows({})
+  ok(off.length === 2 && off[0].name === 'noon' && off[1].name === 'night', '生效窗口应该还是中午/晚上两个')
+  ok(off[0].start === '12:00' && off[0].end === '14:00' && off[1].start === '18:00' && off[1].end === '09:00', '自定义关着时必须原样用内置谷时')
+  ok(off[0].label === '中午谷时' && off[0].on === false, '默认标签/开关不对')
+  ok(effectiveWindows({ noon: true })[0].on === true, 'noon 开关要透出去')
+  const cu = effectiveWindows({ customTime: true, t1Start: '09:30', t1End: '10:15', t2Start: '20:00', t2End: '01:00', noon: true, night: true })
+  ok(cu[0].start === '09:30' && cu[0].end === '10:15', '自定义时段一没按填的来')
+  ok(cu[1].start === '20:00' && cu[1].end === '01:00', '时段二要能跨零点（20:00–01:00）')
+  ok(cu[0].label === '时段一' && cu[1].label === '时段二', '自定义模式下的标签应该是时段一/二')
+  ok(windowInstanceAt(new Date(2026, 9, 17, 0, 30), cu[1], 'night')?.key === '2026-10-16:night', '自定义的跨零点时段也要按"开始那天"算实例')
+  const bad = effectiveWindows({ customTime: true, t1Start: 'abc', t2End: '25:99', noon: true })
+  ok(bad[0].start === '12:00' && bad[1].end === '09:00', '填了乱七八糟的时间要退回内置默认（不能排出 NaN）')
+
+  // ── index.js 的接线 ──
+  ok(idx.includes('perRound: z.natural().default(2)'), 'Config 里没有 perRound（每轮最多看几条）')
+  ok(/perRound: 2,/.test(idx), 'DEFAULTS 里没有 perRound: 2')
+  ok(idx.includes('customTime: z.boolean().default(false)'), 'Config 里没有「自定义时间段」开关')
+  for (const k of ['t1Start', 't1End', 't2Start', 't2End']) ok(idx.includes(`${k}: z.string()`), `Config 里没有 ${k}`)
+  ok(idx.includes('effectiveWindows(cfg).filter((w) => w.on)'), 'tick 没在读生效窗口（自定义时间就白填了）')
+  ok(idx.includes('windowInstanceAt(now, w, w.name)'), 'tick 没按"窗口开始那天"算实例')
+  ok(idx.includes('planRuns(Math.max(now.getTime(), hit.i.startAt), hit.i.endAt, runs)'), 'tick 没把轮次随机排进窗口')
+  // 🔴 这条是这次踩坑的修正本身：排班账本不能按今天过滤
+  ok(!/st\.day === b\.today && st\.plans/.test(idx), '排班账本又按"今天"过滤了（00:30 时 st.day 是昨天 ⇒ 在飞的排班被丢 ⇒ 又成"过 0 点重排一轮"）')
+  ok(idx.includes('const yst = dayKey(new Date(now.getTime() - 864e5))'), '排班账本没按"今+昨"两天清理（旧键会无限堆积）')
+  ok(idx.includes('if (hit.i.day === b.today) remain = Math.min(remain, b.left)'), '当天开的窗口没受"今天还剩几条"约束（手动跑过的也占额度）')
+  ok(idx.includes('这一轮最多挑 ${opts.roundQuota}'), '提示词没把"这一轮最多看几条"告诉它（它会自己加码）')
+  ok(idx.includes('clampInt'), 'perRound 没做范围夹取')
+  ok(idx.includes("if ('perRound' in patch)"), 'POST /config 没接 perRound')
+  ok(idx.includes('touchSchedule'), '改了时间/开关没作废旧排班（新时段里还挂着旧时间点）')
+  // "@ 多少条"是上限不是任务
+  ok(idx.includes('这是上限不是任务'), '提示词没说清"最多 @ 我几条"是上限')
+  ok(idx.includes('🔴 **至多 ${cfg.commentPerRound} 条'), '提示词里没有"至多 N 条"那句原话')
+  ok(idx.includes("if ('commentPerRound' in patch) patch.commentPerRound = Math.max(0"), 'commentPerRound 没允许填 0（一条都不 @）')
+  // 工具/路由报的必须是**实际生效**的窗口（开了自定义时间段时不能还报内置谷时）
+  ok((idx.match(/effectiveWindows/g) || []).length >= 4, 'effectiveWindows 用得太少（tick / status / config 路由 / bili_config 工具都该用）')
+  ok(!idx.includes('Object.entries(WINDOWS)'), '还有地方在遍历写死的内置窗口')
+  ok(idx.includes('⚠️ 原来是写死那两个内置谷时窗口'), 'bili_status 没改成报生效窗口')
+  ok(!idx.includes('const bumpState'), 'bumpState 已是死代码（tick 不再换天重置，留着迟早被调错）')
+  ok(!read('lib/state.mjs').includes('export function windowKey'), 'windowKey（跨零点 bug 的函数本体）还挂着，迟早被人再用')
+
+  // ── client.js 的设置页 ──
+  ok(cli.includes('perRoundEach'), 'client.js 没有"每轮最多看几条"那个输入框')
+  ok(cli.includes('const timeOf ='), 'client.js 没有 timeOf 助手（自定义时间的输入框会直接崩）')
+  ok(cli.includes('自定义时间段'), 'client.js 没有「自定义时间段」开关')
+  ok(cli.includes("'data-bd-time': ''"), 'client.js 的时间输入框没有标记（没法针对性加样式）')
+  ok(cli.includes('每轮最多看几条'), 'client.js 没有「每轮最多看几条」这一栏')
+  ok(cli.includes('今天已看 ${st.ranToday} / ${cfg.perDay}'), 'client.js 没有"今天已看 N / M"的徽章')
+  ok(cli.includes('这一窗排了 ${st.plan.left} 轮还没跑'), 'client.js 没显示排班进度（看不到"还有几轮、下一轮几点"）')
+}
 
 console.log(fail.length ? '❌ 有 ' + fail.length + ' 条没过（共 ' + total + ' 条）：' : `✅ 全部 ${total} 条断言通过`)
 for (const f of fail) console.log('   - ' + f)
