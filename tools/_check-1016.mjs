@@ -1,15 +1,25 @@
 // 改动校验：语法之外还要验"符号来源"和"改动真的落盘了"
+//
+// ⚠️ 2026-10-16：原来 P 写死成 `D:/deepseek/plugins/bili-duty/`（作者的开发机路径）⇒
+//    换台机器 / 换个人跑，一上来就 ENOENT，这个校验等于没有。现在从**这个文件自己的位置**推仓库根。
 import { readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const P = 'D:/deepseek/plugins/bili-duty/'
-const idx = readFileSync(P + 'index.js', 'utf8')
-const duty = readFileSync(P + 'prompts/duty.md', 'utf8')
-const cli = readFileSync(P + 'client.js', 'utf8')
-const readme = readFileSync(P + 'README.md', 'utf8')
-const asr = readFileSync(P + 'lib/asr.py', 'utf8')
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const read = (rel) => readFileSync(join(ROOT, rel), 'utf8')
+
+const idx = read('index.js')
+const duty = read('prompts/duty.md')
+const cli = read('client.js')
+const readme = read('README.md')
+const asr = read('lib/asr.py')
+const api = read('lib/bili-api.mjs')
+const threads = read('lib/threads.mjs')
 
 const fail = []
-const ok = (cond, msg) => { if (!cond) fail.push(msg) }
+let total = 0
+const ok = (cond, msg) => { total++; if (!cond) fail.push(msg) }
 
 // ① pyEnv 定义必须在所有使用之前
 const defAt = idx.indexOf('const pyEnv = (extra = {})')
@@ -55,23 +65,22 @@ ok(!readme.includes('工作目录 = 你填的工作区'), 'README 里还写着"�
 ok(readme.includes('优先用那里那一份'), 'README 没写 uv.exe 手动兜底')
 
 // ⑦ 评论发出后复核（2026-10-16 加的）
-const verify = readFileSync(P + 'lib/verify.mjs', 'utf8')
 ok(idx.includes("from './lib/verify.mjs'"), 'index.js 没 import 复核模块')
 ok(idx.includes('const runVerify = async (why'), 'index.js 里没有 runVerify')
 ok(idx.includes("path === '/api/bili-duty/verify'"), '没有 /verify 路由')
 ok(idx.includes('90_000'), '跑完一轮后的自动复核没挂上')
 ok(idx.includes('rpid **') === false, '不该在这里出现报告文案')   // 文案在 verify.mjs 里
-ok(verify.includes('不等于没发出去'), 'verify.mjs 没守住"看不到不等于没发出去"的措辞')
-ok(verify.includes('reply/reply?type=1&oid='), 'verify.mjs 没走楼中楼接口')
-ok(verify.includes('mode=2'), 'verify.mjs 没走"按时间最新一页"')
+ok(read('lib/verify.mjs').includes('不等于没发出去'), 'verify.mjs 没守住"看不到不等于没发出去"的措辞')
+ok(api.includes('reply/reply?type=1&oid='), 'bili-api.mjs 没走楼中楼接口（0.1.6 起这两条接口归它）')
+ok(read('lib/verify.mjs').includes('mode=2'), '没走"按时间最新一页"')
 ok(cli.includes('onVerify'), 'client.js 没有复核按钮的处理函数')
 ok(cli.includes("'复核评论'"), 'client.js 没有「复核评论」按钮')
 ok(idx.includes('root（楼中楼才填）'), '预建的判重表没有 root 列（楼层里的那条就核不了）')
 ok(duty.includes('根评论的 rpid 记在同一行'), 'duty.md 没要求记 root')
 
 // ⑧ 桌面版那条加载失败的修复（2026-10-16：optional peer 解析不到 ⇒ 整条插件不激活）
-const hostdeps = readFileSync(P + 'lib/hostdeps.mjs', 'utf8')
-const pkg = JSON.parse(readFileSync(P + 'package.json', 'utf8'))
+const hostdeps = read('lib/hostdeps.mjs')
+const pkg = JSON.parse(read('package.json'))
 ok(!/^import .*from '@deepseek-ai\//m.test(idx), 'index.js 顶部还在裸 import @deepseek-ai/*（桌面版会整条不激活）')
 ok(idx.includes("from './lib/hostdeps.mjs'"), 'index.js 没 import hostdeps')
 ok(hostdeps.includes('candidateRoots'), 'hostdeps 里没有候选根探测')
@@ -97,7 +106,29 @@ ok(duty.includes('每条正文 ≤100 字'), '回复没有长度上限')
 ok(duty.includes('最多用 2 次工具调用'), '回复没有工具调用上限')
 ok(duty.includes('拿不准该不该回就跳过'), '没有"拿不准就跳过"的出口')
 
-const TOTAL = 51
-console.log(fail.length ? '❌ 有 ' + fail.length + ' 条没过：' : `✅ 全部 ${TOTAL} 条断言通过`)
+// ⑪ 评论区「来回对话」（2026-10-16 加：从"只回一次"改成"能来回、有上限、按宿主给的名单回"）
+ok(idx.includes("from './lib/threads.mjs'"), 'index.js 没 import 对话模块')
+ok(!!pkg.files?.includes('lib'), 'package.json 的 files 里没有 lib（发了包也用不了）')
+ok(threads.includes('lastTheirRpid'), 'threads.mjs 没有"这一条已经回过了"那道闸')
+ok(threads.includes('来回已经到顶'), 'threads.mjs 没有来回上限那道闸')
+ok(threads.includes('export function noteCommentSent'), 'threads.mjs 没有"宿主自己记发过什么"（靠模型记会空转）')
+ok(threads.includes("conversation.json"), 'threads.mjs 没把账本落在 conversation.json')
+ok(api.includes('export async function fetchThread'), 'bili-api.mjs 没有读一串楼中楼的公共函数')
+ok(idx.includes('root: root || rpid'), 'bili_reply 没透传 root（回楼中楼会挂错楼层）')
+ok(idx.includes('noteCommentSent(stateDir'), 'bili_reply 成功后没有归账')
+ok(idx.includes('inboxBlock'), '提示词没把「谁在等我回话」内联进去')
+ok(idx.includes("path === '/api/bili-duty/chat'"), '没有 /chat 路由（现在回话）')
+ok(idx.includes("path === '/api/bili-duty/inbox'"), '没有 /inbox 路由（谁在等我回话）')
+ok(idx.includes("mode === 'chat' && !inbox?.items?.length"), '「只回话」没做"没人在等就不起会话"的短路')
+ok(cli.includes('现在回话'), 'client.js 没有「现在回话」按钮')
+ok(cli.includes('replyDepth'), 'client.js 没有「同一条串最多来回几轮」')
+ok(cli.includes('/inbox'), 'client.js 没有「看谁在等我回话」')
+ok(duty.includes('到顶的那条就别再接'), 'duty.md 没写来回上限')
+ok(duty.includes('按名单回，别自己翻'), 'duty.md 没写"按名单回、别自己翻"')
+ok(!duty.includes('同一个人在同一话题下只回一次'), 'duty.md 里旧的"只回一次"还在（那是上一版的规则）')
+ok(duty.includes('评论区「来回对话」'), 'duty.md 没有「评论区来回对话」那一节')
+ok(read('vendor/bilibili-mcp/mcp_server.py').includes('rpid_str'), '内置 MCP 没把 rpid 一起回给调用方')
+
+console.log(fail.length ? '❌ 有 ' + fail.length + ' 条没过（共 ' + total + ' 条）：' : `✅ 全部 ${total} 条断言通过`)
 for (const f of fail) console.log('   - ' + f)
 process.exit(fail.length ? 1 : 0)

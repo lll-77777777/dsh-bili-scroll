@@ -509,7 +509,18 @@ async def bili_reply(bvid: str, text: str, rpid: int = 0, root: int = 0) -> str:
                 credential=cred,
             )
 
-        return json.dumps({"success": True, "message": "评论发送成功"}, ensure_ascii=False)
+        # ⭐ 本仓库的小改动（2026-10-16）：把新评论的 rpid 一起回给调用方。
+        #   原因：判重表要记「BV | rpid | root」，而**回执里不给 rpid 就只能靠事后去翻评论列表猜**
+        #   （插件那边"评论区来回对话"要靠它归账）。bilibili-api 的 send_comment 返回的就是
+        #   评论对象本身（API 的 data 字段），rpid / rpid_str 就在里面 —— 只是原版把它丢掉了。
+        #   ⚠️ 纯**增量**：老字段一个没动，解析不出 rpid 时也只是少一个字段。
+        data = result if isinstance(result, dict) else {}
+        out = {"success": True, "message": "评论发送成功"}
+        new_rpid = data.get("rpid") or (data.get("reply") or {}).get("rpid")
+        if new_rpid:
+            out["rpid"] = int(new_rpid)
+            out["rpid_str"] = str(data.get("rpid_str") or new_rpid)
+        return json.dumps(out, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 

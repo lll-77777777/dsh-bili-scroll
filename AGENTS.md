@@ -37,12 +37,21 @@
 
 ## 仓库结构（改代码时看这里）
 
-- `index.js` —— host 半端：11 个工具 + 谷时定时器 + HTTP 接口 + 设置命名空间
+- `index.js` —— host 半端：14 个工具 + 谷时定时器 + HTTP 接口 + 设置命名空间
 - `client.js` —— 浏览器半端：设置页（注册在 `settings.section`）
-- `lib/` —— 状态目录与家目录 / 极小的 MCP stdio 客户端 / 扫码登录 / **`hostdeps.mjs`（从宿主树取 `@deepseek-ai/*`，拿不到就退到自己依赖 / 本地等价实现）** / **`verify.mjs`（评论发出后复核）**
+- `lib/` —— 状态目录与家目录 / 极小的 MCP stdio 客户端 / 扫码登录 / **`hostdeps.mjs`（从宿主树取 `@deepseek-ai/*`，拿不到就退到自己依赖 / 本地等价实现）** / **`verify.mjs`（评论发出后复核）** / **`bili-api.mjs`（B站 只读接口的公共底子）** / **`threads.mjs`（评论区「来回对话」：算谁在等回话 + 对话账本）**
 - `prompts/duty.md` —— 一轮要做的事（判定口径 + 红线，**用户可以改**）
-- `vendor/bilibili-mcp/` —— 内置的 Python MCP（MIT，AGI_Ananas）
+- `vendor/bilibili-mcp/` —— 内置的 Python MCP（MIT，AGI_Ananas；本仓库只加了一处**增量**改动：`bili_reply` 回执带上 `rpid`）
 - `selfcheck.mjs` + `tools/` —— 本地预检：`node selfcheck.mjs`（**现在不用解析钩子了**；`tools/register.mjs` 那条还留着当备份）
+
+## 评论区「来回对话」的三条不变量（改这块时别破坏）
+
+1. ⭐ **"谁在等我回话"由宿主算，不由那一轮翻**（`lib/threads.mjs`）。
+   那一轮被沙箱关着、也没有翻页能力 ⇒ 让它自己去几百条评论里找，只会翻不全 + 白烧钱。
+2. ⭐ **账本由宿主写**（`noteCommentSent` / `noteReplySent`，在 `bili_reply` 成功那一刻）。
+   别改成"让那一轮记得记" —— 实测那样会空转（判重表里 99 行视频、0 条评论记录）。
+3. ⭐ **两条防重复的闸**：`lastTheirRpid`（同一条对方评论只回一次，哪怕它在审核看不见）+
+   `turns >= replyDepth`（来回上限）。少一条就会变成重复打扰 / 拉锯。
 
 ## 约定
 
