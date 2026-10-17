@@ -141,10 +141,6 @@ window.__ModuleLoader__.load({
       const [perDay, setPerDay] = React.useState(null)
       const [perRound, setPerRound] = React.useState(null)
       const [perRoundEach, setPerRoundEach] = React.useState(null)   // ⭐ 每轮最多**看**几条（跟上面那个"发几条评论"不是一回事）
-      const [replyPer, setReplyPer] = React.useState(null)
-      const [replyDepth, setReplyDepth] = React.useState(null)   // ⭐ 同一条串最多来回几轮
-      const [inbox, setInbox] = React.useState(null)             // ⭐ { waiting, text } —— 谁在等我回话
-      const [claimLink, setClaimLink] = React.useState('')       // ⭐ 认领旧评论：粘贴的评论链接
       const [mention, setMention] = React.useState(null)
       const [login, setLogin] = React.useState(null)
       const [runNote, setRunNote] = React.useState(null)
@@ -160,8 +156,6 @@ window.__ModuleLoader__.load({
         if (cfg && perDay === null) setPerDay(String(cfg.perDay ?? 5))
         if (cfg && perRound === null) setPerRound(String(cfg.commentPerRound ?? 1))
         if (cfg && perRoundEach === null) setPerRoundEach(String(cfg.perRound ?? 2))
-        if (cfg && replyPer === null) setReplyPer(String(cfg.replyPerRound ?? 1))
-        if (cfg && replyDepth === null) setReplyDepth(String(cfg.replyDepth ?? 5))
         if (cfg && mention === null) setMention(cfg.mentionName || '')
       }, [cfg])
 
@@ -213,47 +207,6 @@ window.__ModuleLoader__.load({
         } catch (e) { say(String(e?.message ?? e), 'warn') } finally { setBusy('') }
       }
 
-      // ⭐ 「现在回话」：只看「谁在等我回话」并逐条回掉 —— 不搜视频、不写日报（快且便宜）。
-      //    对话等不起谷时窗口：你晚上回一句，要它第二天中午才接话，那就不叫对话了。
-      const onChat = async () => {
-        setBusy('chat')
-        say('')
-        try {
-          const r = await jpost('/chat', {})
-          if (r && r.blocked) say(r.hint || '先打开上面的「评论区来回对话」', 'warn')
-          else if (r && r.nothingToDo) say(r.note || '现在没有人在等你回话', '')
-          else if (r && r.started) say('已经在后台回话了 —— 回完会追加到今天的报告末尾（看下面的「看今天的报告」）', 'good')
-          else say('没起来：' + ((r && r.error) || '看 duty.log'), 'warn')
-        } catch (e) { say(String(e?.message ?? e), 'warn') } finally { setBusy('') }
-      }
-
-      // ⭐ 「看谁在等我回话」：只读一次（宿主去读楼中楼），把名单原样显示 —— 含要填的 rpid / root
-      const onInbox = async () => {
-        setBusy('inbox')
-        say('')
-        try {
-          const r = await jget('/inbox')
-          if (!r || !r.ok) { setInbox({ waiting: 0, text: (r && r.error) || '读不到名单' }); say((r && r.error) || '读不到名单', 'warn'); return }
-          const who = r.onlyFor
-            ? `（只认「${r.onlyFor}」${r.owner && r.owner.mid ? '，UID 已认下' : '，还没认到人'}）`
-            : '（没开「只回我 @ 的那个人」⇒ 名单里可能有别人）'
-          setInbox({ waiting: r.waiting, text: r.text })
-          say((r.waiting ? `有 ${r.waiting} 个人在等你回话` : '现在没有人在等你回话') + ' ' + who, r.waiting ? 'good' : '')
-        } catch (e) { say(String(e?.message ?? e), 'warn') } finally { setBusy('') }
-      }
-
-      // ⭐ 「认领一条旧评论」：以前发的评论、它账本里没有 ⇒ 那条下面的回复它永远看不到。
-      //    粘一条评论链接（含 BV + #reply 号）就能收进账本（只读核对是不是它自己发的）。
-      const onClaim = async () => {
-        const link = String(claimLink || '').trim()
-        if (!link) { say('先把那条评论的链接粘进来 —— B站 App 里对着那条评论点「复制链接」', 'warn'); return }
-        setBusy('claim')
-        try {
-          const r = await jpost('/claim', { link })
-          if (r && r.ok) { say(`已认领 ${r.bvid}${r.already ? '（本来就在账本里）' : ''}：${r.note}`, r.verified === 'no' ? 'warn' : 'good'); setClaimLink('') }
-          else say((r && r.error) || '认领没成功', 'warn')
-        } catch (e) { say(String(e?.message ?? e), 'warn') } finally { setBusy('') }
-      }
 
       const copyText = async (text) => {
         const v = String(text || '')
@@ -477,72 +430,6 @@ window.__ModuleLoader__.load({
         /* ── 发言与转写 ── */
         h('div', { 'data-bd-sec': '' },
           h('div', { 'data-bd-h': '' }, '它会不会替你说话'),
-          h(ToggleRow, {
-            label: '评论区来回对话（只回楼中楼）',
-            note: '默认关；开了之后它只在你那条评论下面那一串里说话 —— 你说一句它接一句，能来回；默认**只跟你**说话，别人回它一律不理',
-            on: sw('replyToComments'),
-            onChange: (v) => patch({ replyToComments: v }, '评论区来回对话'),
-          }),
-          sw('replyToComments') ? h('div', { 'data-bd-sub': '' },
-            h('div', { 'data-bd-row': '' },
-              h('div', { 'data-bd-grow': '' },
-                h('div', { 'data-bd-label': '' }, '每轮最多回几条'),
-                h('div', { 'data-bd-note': '' }, '自由设；宿主直接把名单裁到这个条数 —— 硬上限，不是靠它自觉')),
-              h('input', {
-                'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 1, max: 50,
-                value: replyPer ?? '',
-                onChange: (e) => setReplyPer(e.target.value),
-                onBlur: () => { const n = Math.max(1, Math.min(Number(replyPer) || 1, 50)); setReplyPer(String(n)); patch({ replyPerRound: n }, '每轮几条回复') },
-              })),
-            h('div', { 'data-bd-row': '' },
-              h('div', { 'data-bd-grow': '' },
-                h('div', { 'data-bd-label': '' }, '同一条串最多来回几轮'),
-                h('div', { 'data-bd-note': '' }, '一轮 = 它回一次；到顶就不再接话（防刷屏、防拉锯）')),
-              h('input', {
-                'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 1, max: 30,
-                value: replyDepth ?? '',
-                onChange: (e) => setReplyDepth(e.target.value),
-                onBlur: () => { const n = Math.max(1, Math.min(Number(replyDepth) || 1, 30)); setReplyDepth(String(n)); patch({ replyDepth: n }, '最多来回几轮') },
-              })),
-            h(ToggleRow, {
-              label: '回复所有人',
-              note: '默认关 = 只回复你一个人（别人回复它、@ 它一律不理）；打开 = 别人回复它、@ 它也会回',
-              on: !sw('replyOnlyMention'),
-              onChange: (v) => patch({ replyOnlyMention: !v }, '回复所有人'),
-            }),
-            sw('replyOnlyMention') ? h('div', { 'data-bd-note': '' },
-              '🔒 只回你时这道闸**不只写在提示词里**：发出去那一下还会**再去核一遍「要回的那条是谁写的」** —— '
-              + '不是你就直接拒发（认不出来也一样不发）。所以就算它哪一轮判断失误，也说不出一句给别人的话。'
-              + (String(cfg.mentionName || '').trim() ? '' : ' ⚠️ 「要 @ 谁」（在「自动评论并 @ 你」里）还空着 —— 那样认不出你，会谁都不回。'))
-              : h('div', { 'data-bd-note': '' },
-              '⚠️ 已设成「回复所有人」—— 会拿你的号回复别人（机器闸也随之放开，认不出的也会回），注意红线。'),
-            h(ToggleRow, {
-              label: '在别人的评论区 @ 它，也能把它叫出来',
-              note: '默认开；你在任意视频的评论区打『@' + (st.accountName || '本账号昵称') + '』，它就会看到，并在你那条评论下面回你',
-              on: sw('replyToMentions'),
-              onChange: (v) => patch({ replyToMentions: v }, '在别人的评论区 @ 它'),
-            }),
-            h('div', { 'data-bd-note': '' },
-              st.accountName
-                ? `⭐ 想主动找它聊：在**任意**视频的评论区 @${st.accountName} 就行（它靠 B站 的「收到的@」看到你）。`
-                : '⭐ 想主动找它聊：在任意评论区 @ 它这个账号 —— 昵称要跑一轮（或点一次「看谁在等我回话」）才会显示出来。'),
-            h('div', { 'data-bd-note': '' },
-              '定时那一轮会自己看一眼有没有人等它回话；想让它**立刻**接话就点右边这个 —— 只看消息、不刷视频，很快。'),
-            h('div', { 'data-bd-row': '' },
-              h('button', { 'data-bd-btn': '', 'data-primary': '', disabled: busy === 'chat', onClick: onChat }, '现在回话'),
-              h('button', { 'data-bd-btn': '', disabled: busy === 'inbox', onClick: onInbox }, '看谁在等我回话')),
-            inbox ? h('pre', { 'data-bd-pre': '' }, inbox.text || '（没人在等）') : null,
-            h('div', { 'data-bd-label': '' }, '认领一条旧评论（它以前发的、账本里没有的）'),
-            h('div', { 'data-bd-note': '' },
-              '⚠️ 它只认账本里记着的评论 —— **旧版本发出去的评论没进过账本**，所以那下面的回复它一直看不到。'
-              + 'B站 App 里对着**它发的那条评论**点「复制链接」，粘到这里收进账本，之后那条下面有人回话它就会接。'),
-            h('div', { 'data-bd-row': '' },
-              h('input', {
-                'data-bd-input': '', value: claimLink,
-                placeholder: 'https://www.bilibili.com/video/BV...?comment_on=1#reply...',
-                onChange: (e) => setClaimLink(e.target.value),
-              }),
-              h('button', { 'data-bd-btn': '', disabled: busy === 'claim', onClick: onClaim }, '收进账本'))) : null,
           h(ToggleRow, {
             label: '自动评论并 @ 你',
             note: '默认关；开了之后它会在挑中的视频下面留评论，并 @ 你填的那个人',
