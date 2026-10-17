@@ -142,7 +142,7 @@ ok(idx.includes("replyOnlyMention: z.boolean().default(true)"), 'replyOnlyMentio
 ok(idx.includes('const buildInboxForMe'), 'index.js 没有统一的收件箱入口（危险配置没兜住）')
 ok(idx.includes('谁都不回'), '开着白名单但没填昵称时，没有退化成"谁都不回"的兜底')
 ok(idx.includes('只回「${only.replace'), '提示词里没把"只回这一个人"写进去')
-ok(cli.includes('只回我 @ 的那个人'), 'client.js 没有「只回我 @ 的那个人」开关')
+ok(cli.includes('回复所有人'), 'client.js 没有「回复所有人」开关（"只回我"现在是它的默认反态）')
 ok(duty.includes('只回复我就行了，不理其他人'), 'duty.md 没写"只回使用者本人"这条规矩')
 ok(duty.includes('一律不理'), 'duty.md 没写"名单之外一律不理"')
 
@@ -332,6 +332,11 @@ ok(cli.includes('发出去那一下还会'), 'client.js 的设置页没说明这
   // 🔴 每轮最多回几条必须**硬生效**：buildInbox 的 max 必须拿 replyPerRound 的值
   //    （2026-10-17 之前漏传 ⇒ buildInbox 用默认 8 ⇒ 设置形同虚设，只活在提示词里）
   ok(idx.includes('max: Math.max(1, Number(cfg.replyPerRound) || 1)'), 'buildInbox 没把「每轮最多回几条」传成 max —— 又变回提示词软约束（默认 8）')
+  // ⭐ 每轮最多回几条：范围放宽到 50（"自由选择"）
+  ok(idx.includes('Math.min(Number(patch.replyPerRound) || 1, 50)'), 'replyPerRound 的存值上限没放宽到 50')
+  // ⭐ 「回复所有人」：默认仍只回本人（安全默认别动，见 ⑫ 里那条默认断言），UI 是正向开关
+  ok(cli.includes("on: !sw('replyOnlyMention')"), '「回复所有人」开关没接到 replyOnlyMention（反向）')
+  ok(duty.includes('打开「回复所有人」'), 'duty.md 没告诉它"回复所有人"这个新口径')
 
   // ── client.js 的设置页 ──
   ok(cli.includes('perRoundEach'), 'client.js 没有"每轮最多看几条"那个输入框')

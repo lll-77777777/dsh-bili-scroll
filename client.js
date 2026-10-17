@@ -487,12 +487,12 @@ window.__ModuleLoader__.load({
             h('div', { 'data-bd-row': '' },
               h('div', { 'data-bd-grow': '' },
                 h('div', { 'data-bd-label': '' }, '每轮最多回几条'),
-                h('div', { 'data-bd-note': '' }, '宿主直接把名单裁到这个条数 —— 硬上限，不是靠它自觉')),
+                h('div', { 'data-bd-note': '' }, '自由设；宿主直接把名单裁到这个条数 —— 硬上限，不是靠它自觉')),
               h('input', {
-                'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 1, max: 10,
+                'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 1, max: 50,
                 value: replyPer ?? '',
                 onChange: (e) => setReplyPer(e.target.value),
-                onBlur: () => { const n = Math.max(1, Math.min(Number(replyPer) || 1, 10)); setReplyPer(String(n)); patch({ replyPerRound: n }, '每轮几条回复') },
+                onBlur: () => { const n = Math.max(1, Math.min(Number(replyPer) || 1, 50)); setReplyPer(String(n)); patch({ replyPerRound: n }, '每轮几条回复') },
               })),
             h('div', { 'data-bd-row': '' },
               h('div', { 'data-bd-grow': '' },
@@ -505,16 +505,17 @@ window.__ModuleLoader__.load({
                 onBlur: () => { const n = Math.max(1, Math.min(Number(replyDepth) || 1, 30)); setReplyDepth(String(n)); patch({ replyDepth: n }, '最多来回几轮') },
               })),
             h(ToggleRow, {
-              label: '只回我 @ 的那个人',
-              note: (cfg.mentionName || '').trim()
-                ? `只有「${String(cfg.mentionName).replace(/^@+/, '')}」的留言会进名单 —— 别人回复到它那条评论下面，一律不理`
-                : '⚠️ 「要 @ 谁」（在上面「自动评论并 @ 你」里）还空着 —— 那样它认不出你，会谁都不回',
-              on: sw('replyOnlyMention'),
-              onChange: (v) => patch({ replyOnlyMention: v }, '只回我 @ 的那个人'),
+              label: '回复所有人',
+              note: '默认关 = 只回复你一个人（别人回复它、@ 它一律不理）；打开 = 别人回复它、@ 它也会回',
+              on: !sw('replyOnlyMention'),
+              onChange: (v) => patch({ replyOnlyMention: !v }, '回复所有人'),
             }),
             sw('replyOnlyMention') ? h('div', { 'data-bd-note': '' },
-              '🔒 这道闸**不只写在提示词里**：发出去那一下还会**再去核一遍「要回的那条是谁写的」** —— '
-              + '不是你就直接拒发（认不出来也一样不发）。所以就算它哪一轮判断失误，也说不出一句给别人的话。') : null,
+              '🔒 只回你时这道闸**不只写在提示词里**：发出去那一下还会**再去核一遍「要回的那条是谁写的」** —— '
+              + '不是你就直接拒发（认不出来也一样不发）。所以就算它哪一轮判断失误，也说不出一句给别人的话。'
+              + (String(cfg.mentionName || '').trim() ? '' : ' ⚠️ 「要 @ 谁」（在「自动评论并 @ 你」里）还空着 —— 那样认不出你，会谁都不回。'))
+              : h('div', { 'data-bd-note': '' },
+              '⚠️ 已设成「回复所有人」—— 会拿你的号回复别人（机器闸也随之放开，认不出的也会回），注意红线。'),
             h(ToggleRow, {
               label: '在别人的评论区 @ 它，也能把它叫出来',
               note: '默认开；你在任意视频的评论区打『@' + (st.accountName || '本账号昵称') + '』，它就会看到，并在你那条评论下面回你',

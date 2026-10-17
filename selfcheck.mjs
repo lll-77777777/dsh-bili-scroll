@@ -237,7 +237,7 @@ for (const s of slotsReg) console.log(`    slot ${s.name}  id=${s.id}  order=${s
 
   // 渲染出来了不算完 —— 得能看见"这一轮最多看几条"和排班进度（新功能的门面）
   const flat = JSON.stringify(tree)
-  for (const needle of ['每轮最多看几条', '自定义时间段', '今天已看', '时段二', '这一窗排了']) {
+  for (const needle of ['每轮最多看几条', '自定义时间段', '今天已看', '时段二', '这一窗排了', '回复所有人']) {
     if (!flat.includes(needle)) fail(`设置页渲染出来了，但里面找不到「${needle}」（新设置项没上屏？）`)
   }
   console.log(`✓ client 半端渲染 OK：${renderPasses} 遍（含 /status 回来后的重渲染），树里有「每轮最多看几条 / 自定义时间段 / 排班进度」`)

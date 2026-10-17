@@ -826,7 +826,7 @@ export function apply(ctx, config) {
       + (only
         ? `🔴 **只回「${only.replace(/^@+/, '')}」这一个人** —— 名单里只会有他的留言；`
           + `**别人回复到你那条评论下面，一律不理**（这是使用者定的规矩：只跟他说话 ✓）。`
-        : `⚠️ 设置里关掉了「只回我 @ 的那个人」⇒ 名单里可能有别人（不是使用者本人）；回的时候更要守红线。`)
+        : `⚠️ 已设成「回复所有人」⇒ 名单里可能有别人（不是使用者本人）；回的时候更要守红线。`)
       + (cfg.replyToMentions
         ? `⭐ 另外「收到的 @」也一起看：他在**别的视频的评论区 @ 了它**的话，也会进名单`
           + `（名单里会标「⭐ 这是他在别的视频的评论区 @ 了你」）—— 那一条**就在他这条评论下面回**（楼中楼），`
@@ -1513,7 +1513,7 @@ export function apply(ctx, config) {
       if ('replyToComments' in patch) patch.replyToComments = Boolean(patch.replyToComments)
       if ('replyOnlyMention' in patch) patch.replyOnlyMention = Boolean(patch.replyOnlyMention)
       if ('replyToMentions' in patch) patch.replyToMentions = Boolean(patch.replyToMentions)
-      if ('replyPerRound' in patch) patch.replyPerRound = Math.max(1, Math.min(Number(patch.replyPerRound) || 1, 10))
+      if ('replyPerRound' in patch) patch.replyPerRound = Math.max(1, Math.min(Number(patch.replyPerRound) || 1, 50))
       // ⭐ 来回上限：1～30。夹住是因为它是"不拉锯"的那道闸 —— 填错一个 0 或 999 都不该发生
       if ('replyDepth' in patch) patch.replyDepth = Math.max(1, Math.min(Number(patch.replyDepth) || 1, 30))
       saveCfg(patch)
