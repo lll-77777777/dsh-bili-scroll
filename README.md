@@ -97,6 +97,34 @@ dsh plugin --profile web add github:c1overzz/dsh-bili-scroll   # 备选：直接
 
 ⚠️ 装完**必须重启一次 dsh**（bundle 层要重启才组装）。然后进 **设置 → 刷B站**。
 
+## 自动跑失败？先看这一条（headless 凭据）
+
+如果**手动点「现在跑一轮」能成、自动跑那一轮却几秒钟就退出**，`duty.log` 里反复出现：
+
+```
+dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route "deepseek-official"
+```
+
+那不是插件的问题 —— 是 `--profile headless` 的 profile 把 `deepseek-account` 和
+`credentials` 两项关掉了，子进程只能用环境变量 `DEEPSEEK_API_KEY`。修法：在
+`C:\Users\<你>\.dsh\profiles\headless\cordis.patch.yml` 里写
+
+```yaml
+- id: deepseek-account
+  disabled: false
+- id: credentials
+  disabled: false
+```
+
+改完不用重启 dsh，新起的子进程会重新 compose profile。验证：
+
+```bash
+"<DSH目录>/DeepSeek Harness.exe" "<DSH目录>/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js" \
+  headless "Reply with exactly: OK"
+```
+
+打出 `OK` 就成了。
+
 ## 装不上 / 卡住时，先看这四条（都是用户实测撞过的）
 
 1. **桌面版（DSH NEXT / 0.2.x）上"自动跑"会卡住** —— 有用户反馈：它起那一轮用的是
@@ -195,6 +223,11 @@ dsh plugin --profile web add github:c1overzz/dsh-bili-scroll   # 备选：直接
 - **0.1.6（这一版）**：**评论区能跟你来回说话**（有来回上限 / 按宿主拉好的名单回 / 「现在回话」立刻回一趟）
 - **下一步**：每轮记账（token 与花费）· 周末时段 · 数据目录可配 · 「停掉这一轮」按钮
 - **v0.2**：**用 JS 重写那几个接口 ⇒ 不再需要 Python**（零安装）；报告归档、失败重试
+
+## 第三方代码
+
+`vendor/bilibili-mcp/` 内含第三方项目 bilibili-mcp，MIT 许可，
+Copyright (c) 2026 AGI_Ananas，完整许可见该目录下的 LICENSE 文件。
 
 ## 许可证
 
