@@ -487,7 +487,7 @@ window.__ModuleLoader__.load({
             h('div', { 'data-bd-row': '' },
               h('div', { 'data-bd-grow': '' },
                 h('div', { 'data-bd-label': '' }, '每轮最多回几条'),
-                h('div', { 'data-bd-note': '' }, '只回直接回在你那条评论下面的人')),
+                h('div', { 'data-bd-note': '' }, '宿主直接把名单裁到这个条数 —— 硬上限，不是靠它自觉')),
               h('input', {
                 'data-bd-input': '', 'data-bd-num': '', type: 'number', min: 1, max: 10,
                 value: replyPer ?? '',

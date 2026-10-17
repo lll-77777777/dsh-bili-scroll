@@ -795,6 +795,10 @@ export function apply(ctx, config) {
       }
     } else {
       r = await buildInbox(stateDir, {
+        // ⭐ 每轮最多回几条：**名单层面就裁到 N 条**（硬约束）。
+        //    🔴 2026-10-17 之前这里漏传了 max ⇒ buildInbox 用默认 8 ⇒ 「每轮最多回几条」只活在提示词里、
+        //      靠模型自觉，名单照样能列 8 条 —— 等于没设。现在真裁。
+        max: Math.max(1, Number(cfg.replyPerRound) || 1),
         depth: Math.max(1, Number(cfg.replyDepth) || 5),
         onlyName: replyOnlyNameNow(),
         includeAt: Boolean(cfg.replyToMentions),

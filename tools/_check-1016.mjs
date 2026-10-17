@@ -329,6 +329,9 @@ ok(cli.includes('发出去那一下还会'), 'client.js 的设置页没说明这
   ok(idx.includes('⚠️ 原来是写死那两个内置谷时窗口'), 'bili_status 没改成报生效窗口')
   ok(!idx.includes('const bumpState'), 'bumpState 已是死代码（tick 不再换天重置，留着迟早被调错）')
   ok(!read('lib/state.mjs').includes('export function windowKey'), 'windowKey（跨零点 bug 的函数本体）还挂着，迟早被人再用')
+  // 🔴 每轮最多回几条必须**硬生效**：buildInbox 的 max 必须拿 replyPerRound 的值
+  //    （2026-10-17 之前漏传 ⇒ buildInbox 用默认 8 ⇒ 设置形同虚设，只活在提示词里）
+  ok(idx.includes('max: Math.max(1, Number(cfg.replyPerRound) || 1)'), 'buildInbox 没把「每轮最多回几条」传成 max —— 又变回提示词软约束（默认 8）')
 
   // ── client.js 的设置页 ──
   ok(cli.includes('perRoundEach'), 'client.js 没有"每轮最多看几条"那个输入框')
