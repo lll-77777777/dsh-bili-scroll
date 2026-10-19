@@ -1037,6 +1037,13 @@ export function apply(ctx, config) {
           writeFileSync(inboxFile, `# 谁在等你回话 · ${new Date().toISOString()}\n\n${inbox.text || '（没人在等）'}\n`, 'utf8')
         } catch (e) { log(`写 ${inboxFile} 失败：${e?.message ?? e}`) }
       } catch (e) { log(`拉「谁在等我回话」失败（不拦着跑轮）：${e?.message ?? e}`) }
+    } else if (cfg.autoComment) {
+      // ⭐ 发新的顶层评论「@ 你」不依赖「评论区来回对话」：replyToComments 关着也允许发。
+      //    🔴 2026-10-19 真机踩到：昨天额度用尽那一轮把 allowNewComment 写成了 false，
+      //    之后每轮都因为 replyToComments=false 没走到上面分支 ⇒ 策略文件一直停在旧值
+      //    ⇒ 白天一整轮 @ 0 条（模型想发，被 MCP 那道闸拒）。这里补一次刷新：
+      //    只要开着「自动评论并 @ 你」，每轮开跑前都按今天的额度重写一遍闸。
+      writeReplyPolicy(null)
     }
     // ⭐ 「只回话」那一档：没人在等 ⇒ **一个会话都别起** —— 别为了"没人说话"烧一整轮的钱
     if (mode === 'chat' && !inbox?.items?.length) {
